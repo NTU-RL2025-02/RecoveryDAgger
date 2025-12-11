@@ -34,11 +34,11 @@
     <!-- <a href="https://github.com/NTU-RL2025-02/RecoveryDagger"><strong>Explore the docs »</strong></a> -->
     <!-- <br /> -->
     <br />
-    <a href="https://github.com/NTU-RL2025-02/RecoveryDagger">Paper</a>
+    <a href="https://github.com/NTU-RL2025-02/RecoveryDagger/blob/main/Report.pdf">Paper</a>
     &middot;
-    <a href="https://github.com/NTU-RL2025-02/RecoveryDagger/issues/new?labels=bug&template=bug-report---.md">Slides</a>
+    <a href="https://docs.google.com/presentation/d/1ntnNjOAhUretADrlI4ycZFx2BClxzAWE0GYV3HPjv28/edit?usp=sharing">Slides</a>
     &middot;
-    <a href="https://github.com/NTU-RL2025-02/RecoveryDagger/issues/new?labels=enhancement&template=feature-request---.md">Website</a>
+    <a href="https://github.com/NTU-RL2025-02/RecoveryDagger/">Website</a>
   </p>
 </div>
 
