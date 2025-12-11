@@ -20,7 +20,6 @@
 -->
 
 [![Contributors][contributors-shield]][contributors-url]
-[![Forks][forks-shield]][forks-url]
 [![Stargazers][stars-shield]][stars-url]
 [![Issues][issues-shield]][issues-url]
 [![MIT license][license-shield]][license-url]
@@ -179,7 +178,7 @@ Distributed under the MIT license. See `LICENSE.txt` for more information.
 [issues-shield]: https://img.shields.io/github/issues/NTU-RL2025-02/RecoveryDagger.svg?style=for-the-badge
 [issues-url]: https://github.com/NTU-RL2025-02/RecoveryDagger/issues
 [license-shield]: https://img.shields.io/github/license/NTU-RL2025-02/RecoveryDagger.svg?style=for-the-badge
-[license-url]: https://github.com/NTU-RL2025-02/RecoveryDagger/blob/master/LICENSE.txt
+[license-url]: https://github.com/NTU-RL2025-02/RecoveryDagger/blob/main/LICENSE.txt
 [linkedin-shield]: https://img.shields.io/badge/-LinkedIn-black.svg?style=for-the-badge&logo=linkedin&colorB=555
 [linkedin-url]: https://linkedin.com/in/linkedin_username
 [product-screenshot]: images/screenshot.png
