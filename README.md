@@ -20,10 +20,12 @@
 -->
 
 <div align="center">
+  
 [![Contributors][contributors-shield]][contributors-url]
 [![Stargazers][stars-shield]][stars-url]
 [![Issues][issues-shield]][issues-url]
 [![MIT license][license-shield]][license-url]
+
 <br />
 
 <h1 align="center">RecoveryDagger</h1>
