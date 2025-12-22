@@ -1,0 +1,46 @@
+"""
+rule_expert.py
+A rule-based hard-coded expert for maze environments. Use pre-defined rules to navigate the maze. Use to replace human expert in DAgger training.
+"""
+
+import numpy as np
+from recoverydagger.utils.transform import xy_to_cell_rowcol
+
+
+class RuleBasedExpert:
+    def __init__(self, maze, maze_reward):
+        self.maze = maze
+        self.maze_reward = maze_reward
+        self.maze_height = len(maze)
+        self.maze_width = len(maze[0])
+
+    def start_episode(self):
+        pass
+
+    def __call__(self, observation) -> np.ndarray:
+        """
+        根據 observation 回傳一個 rule-based 的 action。
+
+        observation: (x, y, vx, vy)
+        """
+        x, y = observation[4], observation[5]
+        v_x, v_y = observation[6], observation[7]
+        i, j = self.xy_to_cell_rowcol(x, y)
+        direction = self.maze_reward[i][j]
+
+        if direction == "U":
+            base = np.array([0.0, 1.0], dtype=np.float32)
+            damp = np.array([-v_x, 0.0], dtype=np.float32)
+        elif direction == "D":
+            base = np.array([0.0, -1.0], dtype=np.float32)
+            damp = np.array([-v_x, 0.0], dtype=np.float32)
+        elif direction == "R":
+            base = np.array([1.0, 0.0], dtype=np.float32)
+            damp = np.array([0.0, -v_y], dtype=np.float32)
+        elif direction == "L":
+            base = np.array([-1.0, 0.0], dtype=np.float32)
+            damp = np.array([0.0, -v_y], dtype=np.float32)
+        else:
+            base = np.zeros(2, dtype=np.float32)
+            damp = np.array([-v_x, -v_y], dtype=np.float32)
+        return np.clip(base + damp, -1.0, 1.0)

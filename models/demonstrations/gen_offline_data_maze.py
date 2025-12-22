@@ -1,0 +1,274 @@
+"""
+Generate an offline dataset by rolling out either a trained SAC policy or a
+RuleBasedExpert in PointMaze environments.
+
+Usage:
+    python gen_offline_data_maze.py [--model PATH] [--env_id ENV] [--episodes N]
+                                  [--max_steps N] [--output PATH] [--deterministic]
+                                  [--seed INT] [--min_return FLOAT]
+                                  [--rule-base-expert] [--render]
+
+Defaults:
+    model: models/best_model.zip
+    env_id: PointMaze_Medium-v3
+    episodes: 10
+    max_steps: 1300
+    output: offline_dataset_aawmaze_10.pkl
+
+Notes:
+    - Saved pickle contains: obs, act, next_observations, rew, done, episode_starts.
+    - If --rule-base-expert is specified, the script uses the internal RuleBasedExpert
+      and does not require a pretrained SAC model file.
+    - Use --min_return to filter out low-return episodes.
+"""
+
+import argparse
+import pickle
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Tuple, Union
+
+import gymnasium as gym
+import numpy as np
+from stable_baselines3 import SAC
+import gymnasium_robotics
+from gymnasium.wrappers import FlattenObservation
+from recoverydagger.utils.wrappers import NoisyActionWrapper, MazeWrapper
+from recoverydagger.maze import (
+    FOUR_ROOMS_21_21_REWARD,
+    FOUR_ROOMS_21_21_LEFT_UP_RANDOM,
+)
+from recoverydagger.algos.rule_expert import RuleBasedExpert
+
+
+def parse_args() -> argparse.Namespace:
+    root = Path(__file__).resolve().parents[1]
+    parser = argparse.ArgumentParser(
+        description="Roll out SAC expert to build offline dataset."
+    )
+    parser.add_argument(
+        "--model",
+        type=Path,
+        default=root / "./models/best_model.zip",
+        help="Path to trained SAC model (.zip).",
+    )
+    parser.add_argument(
+        "--env_id",
+        type=str,
+        default="PointMaze_Medium-v3",
+        help="Gymnasium environment id used to train the policy.",
+    )
+    parser.add_argument(
+        "--episodes",
+        type=int,
+        default=10,
+        help="Number of episodes to collect.",
+    )
+    parser.add_argument(
+        "--max_steps",
+        type=int,
+        default=1300,
+        help="Optional cap on steps per episode (defaults to env horizon).",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=root / "offline_dataset_aawmaze_10.pkl",
+        help="Where to store the collected dataset (pickle).",
+    )
+    parser.add_argument(
+        "--deterministic",
+        action="store_true",
+        help="Use deterministic policy actions instead of stochastic ones.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Base seed for env reset and action space.",
+    )
+    parser.add_argument(
+        "--min_return",
+        type=float,
+        default=1,
+        help="If set, only keep episodes with total return >= this value.",
+    )
+    parser.add_argument(
+        "--rule-base-expert",
+        action="store_true",
+        help="generate dataset for rule based expert.",
+    )
+    parser.add_argument(
+        "--render",
+        action="store_true",
+        help="Render while collecting trajectories.",
+    )
+    return parser.parse_args()
+
+
+def collect_rollouts(
+    model: SAC | RuleBasedExpert,
+    env: gym.Env,
+    episodes: int,
+    max_steps: Optional[int],
+    deterministic: bool,
+    base_seed: int,
+    min_return: Optional[float],
+    rule_base_expert: bool,
+    render: bool,
+) -> Dict[str, np.ndarray]:
+    data: Dict[str, List[np.ndarray]] = {
+        "obs": [],
+        "act": [],
+        "next_observations": [],
+        "rew": [],
+        "done": [],
+        "episode_starts": [],
+    }
+    all_returns: List[float] = []
+    all_lengths: List[int] = []
+    kept_returns: List[float] = []
+    kept_lengths: List[int] = []
+    skipped = 0
+
+    for ep in range(episodes):
+        obs, _ = env.reset(seed=base_seed + ep)
+        ep_data: Dict[str, List[np.ndarray]] = {
+            "obs": [],
+            "act": [],
+            "next_observations": [],
+            "rew": [],
+            "done": [],
+            "episode_starts": [],
+        }
+        ep_return = 0.0
+        ep_len = 0
+        terminated = False
+        truncated = False
+
+        while not (terminated or truncated):
+            if rule_base_expert:
+                action = model(obs)
+            else:
+                action, _ = model.predict(obs, deterministic=deterministic)
+            next_obs, env_reward, terminated, truncated, info = env.step(action)
+            if render:
+                env.render()
+
+            success_flag = env.is_success()
+            if success_flag is None and terminated and not truncated:
+                success_flag = True
+            if success_flag:
+                terminated = True
+
+            reward = (
+                float(success_flag) if success_flag is not None else float(env_reward)
+            )
+            done_flag = terminated or truncated
+
+            ep_data["obs"].append(obs)
+            ep_data["act"].append(action)
+            ep_data["next_observations"].append(next_obs)
+            ep_data["rew"].append(reward)
+            ep_data["done"].append(done_flag)
+            ep_data["episode_starts"].append(ep_len == 0)
+
+            obs = next_obs
+            ep_return += reward
+            ep_len += 1
+
+            if max_steps is not None and ep_len >= max_steps:
+                # Forcefully end the episode if a custom cap is provided.
+                break
+
+        all_returns.append(ep_return)
+        all_lengths.append(ep_len)
+
+        if min_return is not None and ep_return < min_return:
+            skipped += 1
+            print(
+                f"Episode {ep + 1}/{episodes}: return={ep_return:.2f}, "
+                f"length={ep_len} (skipped; below min_return={min_return})"
+            )
+            continue
+
+        for k in data:
+            data[k].extend(ep_data[k])
+        kept_returns.append(ep_return)
+        kept_lengths.append(ep_len)
+        print(
+            f"Episode {ep + 1}/{episodes}: return={ep_return:.2f}, length={ep_len} (kept)"
+        )
+
+    if kept_lengths:
+        print(
+            f"Collected {len(data['obs'])} transitions "
+            f"({np.mean(kept_lengths):.1f}±{np.std(kept_lengths):.1f} steps/kept-episode)."
+        )
+        print(
+            f"Average kept return: {np.mean(kept_returns):.2f} ± {np.std(kept_returns):.2f}"
+        )
+    else:
+        print("No episodes satisfied min_return; dataset is empty.")
+
+    print(
+        f"Summary: kept {len(kept_lengths)} / {episodes} episodes, "
+        f"skipped {skipped} (min_return={min_return}). "
+        f"All episodes average return: {np.mean(all_returns):.2f} ± {np.std(all_returns):.2f}"
+    )
+
+    return {
+        "obs": np.asarray(data["obs"], dtype=np.float32),
+        "act": np.asarray(data["act"], dtype=np.float32),
+        "next_observations": np.asarray(data["next_observations"], dtype=np.float32),
+        "rew": np.asarray(data["rew"], dtype=np.float32),
+        "done": np.asarray(data["done"], dtype=bool),
+        "episode_starts": np.asarray(data["episode_starts"], dtype=bool),
+    }
+
+
+def main() -> None:
+    args = parse_args()
+
+    env = gym.make(
+        "PointMaze_Medium-v3",
+        continuing_task=False,
+        reset_target=False,
+        maze_map=FOUR_ROOMS_21_21_LEFT_UP_RANDOM,
+        max_episode_steps=args.max_steps,
+        render_mode="human" if args.render else None,
+    )
+    env = FlattenObservation(env)
+    env = NoisyActionWrapper(env, noise_scale=0.2)
+    env = MazeWrapper(env, FOUR_ROOMS_21_21_LEFT_UP_RANDOM, touch_wall_distance=0.15)
+    env.action_space.seed(args.seed)
+    if args.rule_base_expert:
+        model = RuleBasedExpert(
+            FOUR_ROOMS_21_21_LEFT_UP_RANDOM, FOUR_ROOMS_21_21_REWARD
+        )
+    else:
+        if not args.model.exists():
+            raise FileNotFoundError(f"Model file not found: {args.model}")
+        model: SAC = SAC.load(str(args.model))
+
+    rollouts = collect_rollouts(
+        model=model,
+        env=env,
+        episodes=args.episodes,
+        max_steps=args.max_steps,
+        deterministic=args.deterministic,
+        base_seed=args.seed,
+        min_return=args.min_return,
+        rule_base_expert=args.rule_base_expert,
+        render=args.render,
+    )
+
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    with args.output.open("wb") as f:
+        pickle.dump(rollouts, f)
+    print(f"Saved dataset to {args.output}")
+
+    env.close()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,1256 @@
+"""
+thriftydagger.py: Thrifty DAgger algorithm implementation
+"""
+
+import os
+import sys
+import pickle
+import itertools
+from copy import deepcopy
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
+import h5py
+import wandb
+
+import numpy as np
+import torch
+import torch.nn as nn
+from torch.optim import Adam
+
+import recoverydagger.algos.core as core
+from recoverydagger.utils.logx import EpochLogger
+from recoverydagger.algos.buffer import ReplayBuffer, QReplayBuffer
+from recoverydagger.algos.recovery import QRecovery, FiveQRecovery
+
+
+# ----------------------------------------------------------------------
+# Config dataclasses（集中 magic numbers）
+# ----------------------------------------------------------------------
+
+
+@dataclass
+class ThresholdConfig:
+    """控制 switching 門檻更新的相關常數。"""
+
+    # online estimates 數量大於這個值才更新門檻
+    min_estimates_for_update: int = 25
+    # Q-risk 初始切到 human 的 safety 門檻（折扣成功率）
+    init_eps_H: float = 0.48
+    # Q-risk 初始切回 robot 的 safety 門檻
+    init_eps_R: float = 0.495
+
+
+@dataclass
+class QRiskConfig:
+    """控制 Q-risk 訓練相關的超參數。"""
+
+    # 每個 batch 中 positive（成功）樣本佔的比例
+    pos_fraction: float = 0.1
+    # Q-network 的 gradient step 是 policy 的幾倍
+    q_grad_multiplier: int = 5
+    # Q-network 的 batch 大小 = batch_size * q_batch_scale
+    q_batch_scale: float = 0.5
+
+
+# ----------------------------------------------------------------------
+# Losses & single-step updates
+# ----------------------------------------------------------------------
+
+
+def compute_loss_pi(
+    ac: Any, data: Dict[str, torch.Tensor], net_idx: int
+) -> torch.Tensor:
+    """對 ensemble 中第 net_idx 個 policy 做 MSE 行為克隆 loss。"""
+    o, a = data["obs"], data["act"]
+    a_pred = ac.pis[net_idx](o)
+    return torch.mean(torch.sum((a - a_pred) ** 2, dim=1))
+
+
+def compute_loss_q(
+    ac: Any, ac_targ: Any, data: Dict[str, torch.Tensor], gamma: float
+) -> torch.Tensor:
+    """
+    雙 Q-network 的 MSE Bellman loss：
+      backup = r + gamma * (1 - d) * min(Q1', Q2').
+    """
+    o, a, o2, r, d = (
+        data["obs"],
+        data["act"],
+        data["obs2"],
+        data["rew"],
+        data["done"],
+    )
+
+    with torch.no_grad():
+        # ensemble 平均的 a2
+        a2 = torch.mean(torch.stack([pi(o2) for pi in ac.pis]), dim=0)
+
+    q1 = ac.q1(o, a)
+    q2 = ac.q2(o, a)
+
+    with torch.no_grad():
+        q1_t = ac_targ.q1(o2, a2)
+        q2_t = ac_targ.q2(o2, a2)
+        backup = r + gamma * (1 - d) * torch.min(q1_t, q2_t)
+
+    loss_q1 = ((q1 - backup) ** 2).mean()
+    loss_q2 = ((q2 - backup) ** 2).mean()
+    return loss_q1 + loss_q2
+
+
+def update_pi(
+    ac: Any, pi_optimizer: Adam, data: Dict[str, torch.Tensor], net_idx: int
+) -> float:
+    """對指定的 ensemble policy 做一次 gradient step，回傳 loss (float)。"""
+    pi_optimizer.zero_grad()
+    loss_pi = compute_loss_pi(ac, data, net_idx)
+    loss_pi.backward()
+    pi_optimizer.step()
+    return float(loss_pi.item())
+
+
+def update_q(
+    ac: Any,
+    ac_targ: Any,
+    q_optimizer: Adam,
+    data: Dict[str, torch.Tensor],
+    gamma: float,
+    timer: int,
+) -> float:
+    """對 Q-network 做一次 gradient step，包含 soft update target network。"""
+    q_optimizer.zero_grad()
+    loss_q = compute_loss_q(ac, ac_targ, data, gamma)
+    loss_q.backward()
+    q_optimizer.step()
+
+    if timer % 2 == 0:
+        with torch.no_grad():
+            for p, p_targ in zip(ac.parameters(), ac_targ.parameters()):
+                p_targ.data.mul_(0.995)
+                p_targ.data.add_((1 - 0.995) * p.data)
+
+    return float(loss_q.item())
+
+
+# ----------------------------------------------------------------------
+# Evaluation rollouts
+# ----------------------------------------------------------------------
+
+
+def test_agent(
+    env: Any,
+    ac: Any,
+    num_test_episodes: int,
+    act_limit: float,
+    horizon: int,
+    robosuite: bool,
+    logger_kwargs: Dict[str, Any],
+    epoch: int = 0,
+) -> float:
+    """
+    使用目前 policy `ac` 在環境中跑 `num_test_episodes` 回合（不做 intervention），
+    並將 rollouts 存成 `test-rollouts.pkl` 以及 `output_dir/test{epoch}.pkl`。
+    Returns:
+        float: 平均成功率
+    """
+    if num_test_episodes <= 0:
+        return
+
+    obs_list, act_list, done_list, reward_list = [], [], [], []
+
+    for episode_idx in range(num_test_episodes):
+        ball_traj = []  # 用於紀錄球的軌跡
+        ep_ret, ep_ret2, ep_len = 0.0, 0.0, 0
+        o, _ = env.reset()
+        done = False
+
+        while not done:
+            # print(o)
+            obs_list.append(o)
+            ball_x, ball_y = o[0], o[1]
+            ball_traj.append([ball_x, ball_y])  # 存入綠色球的軌跡
+
+            a = ac.act(o)
+            a = np.clip(a, -act_limit, act_limit)
+            act_list.append(a)
+
+            o, r, terminated, truncated, _ = env.step(a)
+            ep_ret += r
+
+            success = env.is_success()
+            done = terminated or truncated or success or (ep_len + 1 >= horizon)
+
+            ep_ret2 += float(success)
+            done_list.append(done)
+            reward_list.append(int(success))
+
+            ep_len += 1
+        ball_x, ball_y = o[0], o[1]
+        ball_traj.append([ball_x, ball_y])  # 存入綠色球的軌跡
+        print(
+            f"Agent testing edisode {episode_idx} done with susccess={success}, terminated={terminated}, tuncated={truncated}, ep_len_lim={ep_len + 1 >= horizon} {horizon} {ep_len}",
+            flush=True,
+        )
+        with h5py.File(
+            os.path.join(
+                logger_kwargs["output_dir"],
+                f"epoch{epoch}_trajectories.hdf5",
+            ),
+            "a",
+        ) as hdf5_trajectories_file:
+            hdf5_trajectories_file[
+                f"testing/epoch{epoch}/episode{episode_idx}/position"
+            ] = np.array(ball_traj)
+
+    success_rate = sum(reward_list) / num_test_episodes
+    data = {
+        "obs": np.stack(obs_list),
+        "act": np.stack(act_list),
+        "done": np.array(done_list),
+        "rew": np.array(reward_list),
+    }
+
+    pickle.dump(data, open("test-rollouts.pkl", "wb"))
+    pickle.dump(
+        data,
+        open(os.path.join(logger_kwargs["output_dir"], f"test{epoch}.pkl"), "wb"),
+    )
+
+    return success_rate
+
+
+# ----------------------------------------------------------------------
+# Offline BC pretraining
+# ----------------------------------------------------------------------
+
+
+def pretrain_policies(
+    ac: Any,
+    replay_buffer: ReplayBuffer,
+    held_out_data: Dict[str, np.ndarray],
+    grad_steps: int,
+    bc_epochs: int,
+    batch_size: int,
+    replay_size: int,
+    obs_dim: Tuple[int, ...],
+    act_dim: int,
+    device: torch.device,
+    pi_lr: float,
+) -> List[Adam]:
+    """
+    使用離線 BC 資料先 pretrain ensemble 中的每個 policy。
+
+    每個成員都各自抽樣（bootstrap）一個 dataset，並在 held-out 上做簡單 validation。
+    """
+    pi_optimizers: List[Adam] = [
+        Adam(ac.pis[net_idx].parameters(), lr=pi_lr) for net_idx in range(ac.num_nets)
+    ]
+
+    for net_idx in range(ac.num_nets):
+        if ac.num_nets > 1:
+            print(f"Net #{net_idx}")
+            tmp_buffer = ReplayBuffer(
+                obs_dim=obs_dim, act_dim=act_dim, size=replay_size, device=device
+            )
+            for _ in range(replay_buffer.size):
+                buf_idx = np.random.randint(replay_buffer.size)
+                tmp_buffer.store(
+                    replay_buffer.obs_buf[buf_idx], replay_buffer.act_buf[buf_idx]
+                )
+        else:
+            tmp_buffer = replay_buffer
+
+        for epoch_idx in range(bc_epochs):
+            loss_pi_vals: List[float] = []
+
+            for step_idx in range(grad_steps):
+                batch = tmp_buffer.sample_batch(batch_size)
+                loss_pi_vals.append(
+                    update_pi(ac, pi_optimizers[net_idx], batch, net_idx)
+                )
+
+            validation_losses: List[float] = []
+            for sample_idx in range(len(held_out_data["obs"])):
+                a_pred = ac.act(held_out_data["obs"][sample_idx], i=net_idx)
+                a_sup = held_out_data["act"][sample_idx]
+                validation_losses.append(float(np.sum(a_pred - a_sup) ** 2))
+
+            print("LossPi", sum(loss_pi_vals) / len(loss_pi_vals))
+            print(
+                "LossValid", sum(validation_losses) / len(validation_losses), flush=True
+            )
+
+    return pi_optimizers
+
+
+# ----------------------------------------------------------------------
+# Threshold estimation from offline data
+# ----------------------------------------------------------------------
+
+
+def estimate_initial_thresholds(
+    ac: Any,
+    replay_buffer: ReplayBuffer,
+    held_out_data: Dict[str, np.ndarray],
+    target_rate: float,
+) -> Tuple[float, float]:
+    """
+    從 offline BC data 估計：
+      - switch2robot_thresh: robot vs expert discrepancy 的平均
+      - switch2human_thresh: ensemble variance 在 held-out set 上的 (1 - target_rate) 分位數
+    """
+    discrepancies: List[float] = []
+    for buf_idx in range(replay_buffer.size):
+        a_pred = ac.act(replay_buffer.obs_buf[buf_idx])
+        a_sup = replay_buffer.act_buf[buf_idx]
+        discrepancies.append(float(np.sum((a_pred - a_sup) ** 2)))
+
+    heldout_estimates: List[float] = []
+    for sample_idx in range(len(held_out_data["obs"])):
+        heldout_estimates.append(float(ac.variance(held_out_data["obs"][sample_idx])))
+
+    switch2robot_thresh = float(np.mean(discrepancies))
+
+    # 取 (1 - target_rate) 分位數
+    target_idx = int((1 - target_rate) * len(heldout_estimates))
+    switch2human_thresh = sorted(heldout_estimates)[target_idx]
+
+    return switch2robot_thresh, switch2human_thresh
+
+
+# ----------------------------------------------------------------------
+# Helpers: retrain policy / Q-risk / logging
+# ----------------------------------------------------------------------
+
+
+def retrain_policy(
+    actor_critic_cls: Any,
+    env: Any,
+    device: torch.device,
+    num_nets: int,
+    ac_kwargs: Dict[str, Any],
+    replay_buffer: ReplayBuffer,
+    replay_size: int,
+    obs_dim: Tuple[int, ...],
+    act_dim: int,
+    pi_lr: float,
+    grad_steps: int,
+    bc_epochs: int,
+    epoch_idx: int,
+    batch_size: int,
+) -> Tuple[Any, List[Adam], Optional[float]]:
+    """
+    使用 aggregate replay_buffer 的資料，從頭重新訓練 ensemble policy。
+    回傳新的 ac、pi_optimizers 與平均 LossPi。
+    """
+    if epoch_idx == 0:
+        return None, [], None  # epoch 0 不 retrain
+
+    loss_pi_vals: List[float] = []
+
+    ac = actor_critic_cls(
+        env.observation_space,
+        env.action_space,
+        device,
+        num_nets=num_nets,
+        **ac_kwargs,
+    )
+
+    pi_optimizers: List[Adam] = [
+        Adam(ac.pis[net_idx].parameters(), lr=pi_lr) for net_idx in range(ac.num_nets)
+    ]
+
+    for net_idx in range(ac.num_nets):
+        # bootstrap resampling，讓每個 ensemble 成員看到不同的 dataset
+        if ac.num_nets > 1:
+            tmp_buffer = ReplayBuffer(
+                obs_dim=obs_dim,
+                act_dim=act_dim,
+                size=replay_size,
+                device=device,
+            )
+            for _ in range(replay_buffer.size):
+                buf_idx = np.random.randint(replay_buffer.size)
+                tmp_buffer.store(
+                    replay_buffer.obs_buf[buf_idx], replay_buffer.act_buf[buf_idx]
+                )
+        else:
+            tmp_buffer = replay_buffer
+
+        # 訓練次數會隨著 epoch 增加
+        total_steps = grad_steps * (bc_epochs + epoch_idx)
+        for step_idx in range(total_steps):
+            batch = tmp_buffer.sample_batch(batch_size)
+            loss_pi_vals.append(update_pi(ac, pi_optimizers[net_idx], batch, net_idx))
+
+    avg_loss_pi = sum(loss_pi_vals) / len(loss_pi_vals) if loss_pi_vals else None
+    return ac, pi_optimizers, avg_loss_pi
+
+
+# def retrain_qrisk_monte_carlo(
+#     ac: Any,
+#     ac_targ: Any,
+#     qbuffer: QReplayBuffer,
+#     num_test_episodes: int,
+#     expert_policy: Any,
+#     recovery_policy: Any,
+#     env: Any,
+#     act_limit: float,
+#     horizon: int,
+#     robosuite: bool,
+#     logger_kwargs: Dict[str, Any],
+#     pi_lr: float,
+#     bc_epochs: int,
+#     grad_steps: int,
+#     gamma: float,
+#     batch_size: int,
+#     qrisk_cfg: QRiskConfig,
+#     epoch_idx: int,
+#     risk_probe: bool,
+#     epoch_data,
+# ) -> Optional[float]:
+#     """
+#     若 q_learning=True，重新訓練 Q-risk safety critic，並回傳平均 LossQ。
+#     否則回傳 None。
+#     """
+
+#     # 重新設定 Q-network optimizer
+#     q_params = itertools.chain(ac.q1.parameters(), ac.q2.parameters())
+#     q_optimizer = Adam(q_params, lr=pi_lr)
+
+#     loss_q_vals: List[float] = []
+#     q_batch_size = int(batch_size * qrisk_cfg.q_batch_scale)
+
+#     # for episode in epoch_data:
+#     #     obs = torch.as_tensor(episode["obs"][:-1], dtype=torch.float32, device="cuda")
+#     #     act = torch.as_tensor(episode["act"][:-1], dtype=torch.float32, device="cuda")
+#     #     obs2 = torch.as_tensor(np.concatenate([episode["obs"][1:], [0]]), dtype=torch.float32, device="cuda")
+#     #     rew = torch.as_tensor(episode["rew"][:-1], dtype=torch.float32, device="cuda")
+#     #     done = torch.as_tensor(episode["done"][:-1], dtype=torch.float32, device="cuda")
+
+#     #     loss_q_vals.append(
+#     #         update_q(ac, ac_targ, q_optimizer, [obs, act, obs2, rew, done], gamma, timer=0)
+#     #     )
+
+#     for _ in range(bc_epochs):
+#         for step_idx in range(grad_steps * qrisk_cfg.q_grad_multiplier):
+#             batch = qbuffer.sample_batch(
+#                 q_batch_size, pos_fraction=qrisk_cfg.pos_fraction
+#             )
+#             loss_q_vals.append(
+#                 update_q(ac, ac_targ, q_optimizer, batch, gamma, timer=step_idx)
+#             )
+
+#     avg_loss_q = sum(loss_q_vals) / len(loss_q_vals) if loss_q_vals else None
+#     return avg_loss_q
+
+
+def retrain_qrisk(
+    ac: Any,
+    ac_targ: Any,
+    qbuffer: QReplayBuffer,
+    num_test_episodes: int,
+    expert_policy: Any,
+    recovery_policy: Any,
+    env: Any,
+    act_limit: float,
+    horizon: int,
+    robosuite: bool,
+    logger_kwargs: Dict[str, Any],
+    pi_lr: float,
+    bc_epochs: int,
+    grad_steps: int,
+    gamma: float,
+    batch_size: int,
+    qrisk_cfg: QRiskConfig,
+    epoch_idx: int,
+    risk_probe: bool,
+) -> Optional[float]:
+    """
+    若 q_learning=True，重新訓練 Q-risk safety critic，並回傳平均 LossQ。
+    否則回傳 None。
+    """
+
+    # 重新設定 Q-network optimizer
+    q_params = itertools.chain(ac.q1.parameters(), ac.q2.parameters())
+    q_optimizer = Adam(q_params, lr=pi_lr)
+
+    loss_q_vals: List[float] = []
+    q_batch_size = int(batch_size * qrisk_cfg.q_batch_scale)
+
+    for _ in range(bc_epochs):
+        for step_idx in range(grad_steps * qrisk_cfg.q_grad_multiplier):
+            batch = qbuffer.sample_batch(
+                q_batch_size, pos_fraction=qrisk_cfg.pos_fraction
+            )
+            loss_q_vals.append(
+                update_q(ac, ac_targ, q_optimizer, batch, gamma, timer=step_idx)
+            )
+
+    avg_loss_q = sum(loss_q_vals) / len(loss_q_vals) if loss_q_vals else None
+    return avg_loss_q
+
+
+def log_epoch(
+    logger: EpochLogger,
+    epoch_idx: int,
+    ep_num: int,
+    success_rate: int,
+    total_env_interacts: int,
+    online_burden: int,
+    online_burden_recovery: int,
+    total_burden: int,
+    num_switch_to_novel: int,
+    num_switch_to_exp: int,
+    num_switch_to_recovery: int,
+    num_switch_to_robot: int,
+    loss_pi: Optional[float],
+    loss_q: Optional[float],
+    switch2robot_thresh: float,
+    switch2human_thresh: float,
+    switch2robot_thresh2: float,
+    switch2human_thresh2: float,
+) -> None:
+    """
+    負責：
+      - 呼叫 logger.save_state（外部呼叫）
+      - 印出當前統計
+      - 使用 logger.log_tabular 寫入 progress.txt
+    """
+    print("Epoch", epoch_idx)
+    avg_loss_pi = loss_pi if loss_pi is not None else 0.0
+    avg_loss_q = loss_q if loss_q is not None else 0.0
+
+    if loss_pi is not None:
+        print("LossPi", avg_loss_pi)
+    if loss_q is not None:
+        print("LossQ", avg_loss_q)
+
+    print("TotalEpisodes", ep_num)
+    print("TotalEnvInteracts", total_env_interacts)
+    print("SuccessRate", success_rate)
+    print("OnlineBurden", online_burden)
+    print("OnlineBurdenRecovery", online_burden_recovery)
+    print("TotalBurden", total_burden)
+    print("NumSwitchToNov", num_switch_to_novel)
+    print("NumSwitchToExpert", num_switch_to_exp)
+    print("NumSwitchToRisk", num_switch_to_recovery)
+    print("NumSwitchBack", num_switch_to_robot, flush=True)
+
+    logger.log_tabular("Epoch", epoch_idx)
+    logger.log_tabular("LossPi", avg_loss_pi)
+    logger.log_tabular("LossQ", avg_loss_q)
+    logger.log_tabular("TotalEpisodes", ep_num)
+    logger.log_tabular("TotalEnvInteracts", total_env_interacts)
+    logger.log_tabular("SuccessRate", success_rate)
+    logger.log_tabular("NumSwitchToNov", num_switch_to_novel)
+    logger.log_tabular("NumSwitchToExpert", num_switch_to_exp)
+    logger.log_tabular("NumSwitchToRisk", num_switch_to_recovery)
+    logger.log_tabular("NumSwitchBack", num_switch_to_robot)
+    logger.log_tabular("OnlineBurden", online_burden)
+    logger.log_tabular("OnlineBurdenRecovery", online_burden_recovery)
+    logger.log_tabular("TotalBurden", total_burden)
+    logger.log_tabular("Switch2RobotThresh", switch2robot_thresh)
+    logger.log_tabular("Switch2HumanThresh", switch2human_thresh)
+    logger.log_tabular("Switch2RobotThresh2", switch2robot_thresh2)
+    logger.log_tabular("Switch2HumanThresh2", switch2human_thresh2)
+
+    logger.dump_tabular()
+
+
+# ----------------------------------------------------------------------
+# Main ThriftyDAgger algorithm
+# ----------------------------------------------------------------------
+
+
+def thrifty(
+    env: Any,
+    iters: int = 5,
+    actor_critic: Any = core.Ensemble,
+    ac_kwargs: Dict[str, Any] = dict(),
+    seed: int = 0,
+    grad_steps: int = 500,
+    obs_per_iter: int = 2000,
+    replay_size: int = int(3e4),
+    pi_lr: float = 1e-3,
+    batch_size: int = 100,
+    logger_kwargs: Dict[str, Any] = dict(),
+    num_test_episodes: int = 10,
+    bc_epochs: int = 20,
+    input_file: str = "data.pkl",
+    device_idx: int = 0,
+    expert_policy: Optional[Any] = None,
+    recovery_policy: Optional[Any] = None,
+    num_nets: int = 5,
+    target_rate: float = 0.01,
+    robosuite: bool = False,
+    gym_cfg: Optional[Dict[str, Any]] = None,
+    gamma: float = 0.9999,
+    init_model: Optional[str] = None,
+    max_expert_query: int = 50000,
+    recovery_type: str = "five_q",
+    recovery_kwargs: Dict[str, Any] = dict(),
+    fix_thresholds: bool = False,
+    bc_checkpoint: Optional[str] = None,
+    save_bc_checkpoint: Optional[str] = None,
+    skip_bc_pretrain: bool = False,
+    risk_probe: bool = False,
+) -> None:
+    """
+    Main entrypoint for ThriftyDAgger.
+
+    主要流程：
+      1. 使用 offline BC data pretrain ensemble policies
+      2. 根據線上 estimate 的 uncertainty / Q-risk 做 context switching
+      3. 每個 iter 重新用 aggregate data 做一次 DAgger-style retrain
+      4. 選擇性地訓練 Q-risk safety critic
+    """
+    # 如果同時給 init_model 跟 bc_checkpoint，容易搞混，直接擋掉
+    if init_model is not None and bc_checkpoint is not None:
+        raise ValueError(
+            "Both init_model and bc_checkpoint are provided. "
+            "Please use only one of them to initialize the policy."
+        )
+    # ----------------------------------------------------------
+    # 1. 建立 logger 並存 config（不包含 env，避免 JSON 序列化問題），也把trajectory saver存好
+    # ----------------------------------------------------------
+    logger = EpochLogger(**logger_kwargs)
+    _locals = locals()
+    del _locals["env"]  # env 無法 JSON 化，從 config 中移除
+    try:
+        logger.save_config(_locals)
+    except TypeError as e:
+        print(f"[Warning] Could not save config as JSON: {e}")
+
+    # ----------------------------------------------------------
+    # 2. 裝置選擇與隨機種子
+    # ----------------------------------------------------------
+    if device_idx >= 0 and torch.cuda.is_available():
+        device = torch.device("cuda", device_idx)
+    else:
+        device = torch.device("cpu")
+
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+
+    # ----------------------------------------------------------
+    # 3. robosuite 設定與環境基本資訊
+    # ----------------------------------------------------------
+    if robosuite:
+        # 將 model.xml 存到 output_dir，方便之後 replay
+        with open(os.path.join(logger_kwargs["output_dir"], "model.xml"), "w") as fh:
+            fh.write(env.env.sim.model.get_xml())
+
+    # 從環境取得 observation space / action space 維度
+    obs_dim = env.observation_space.shape
+    act_dim = env.action_space.shape[0]
+    act_limit = env.action_space.high[0]
+
+    # 確保 action space 是對稱的 [-act_limit, act_limit]
+    assert act_limit == -1 * env.action_space.low[0], "Action space should be symmetric"
+
+    # horizon: 每個 episode 最大長度 (由 gym_cfg 設定)
+    horizon = gym_cfg["MAX_EP_LEN"]
+
+    # ----------------------------------------------------------
+    # 4. 建立 actor-critic（ensemble）與 target network
+    # ----------------------------------------------------------
+    ac = actor_critic(
+        env.observation_space,
+        env.action_space,
+        device,
+        num_nets=num_nets,
+        **ac_kwargs,
+    )
+
+    if init_model:
+        # 若提供 init_model，則直接從檔案載入已訓練好的 ac
+        try:
+            ac = torch.load(init_model, map_location=device, weights_only=False).to(
+                device
+            )
+        except TypeError:
+            ac = torch.load(init_model, map_location=device).to(device)
+        ac.device = device
+
+    # target network（Q-learning 用）
+    ac_targ = deepcopy(ac)
+    for p in ac_targ.parameters():
+        p.requires_grad = False
+
+    # ----------------------------------------------------------
+    # 5. Q-network optimizer（第一次初始化）與 model saving 設定
+    #    （實際訓練時會在 retrain_qrisk 中重新建立 optimizer）
+    # ----------------------------------------------------------
+    q_params = itertools.chain(ac.q1.parameters(), ac.q2.parameters())
+    q_optimizer = Adam(q_params, lr=pi_lr)  # 主要是占位，實際訓練時重建
+    logger.setup_pytorch_saver(ac)
+
+    # ----------------------------------------------------------
+    # 6. 建立 replay buffers 並載入 offline data
+    # ----------------------------------------------------------
+    replay_buffer = ReplayBuffer(
+        obs_dim=obs_dim,
+        act_dim=act_dim,
+        size=replay_size,
+        device=device,
+    )
+
+    # 載入離線 expert rollouts (pkl file)
+    input_data = pickle.load(open(input_file, "rb"))
+
+    # shuffle 並切出 held-out set 用於 validation / threshold estimation
+    num_bc = len(input_data["obs"])
+    idxs = np.arange(num_bc)
+    np.random.shuffle(idxs)
+
+    # 前 90% 當作 BC 訓練資料
+    replay_buffer.fill_buffer(
+        input_data["obs"][idxs][: int(0.9 * num_bc)],
+        input_data["act"][idxs][: int(0.9 * num_bc)],
+    )
+
+    # 後 10% 當作 held-out set
+    held_out_data = {
+        "obs": input_data["obs"][idxs][int(0.9 * num_bc) :],
+        "act": input_data["act"][idxs][int(0.9 * num_bc) :],
+    }
+
+    # Q-replay buffer，用來訓練 safety critic (Qrisk)
+    qbuffer = QReplayBuffer(
+        obs_dim=obs_dim,
+        act_dim=act_dim,
+        size=replay_size,
+        device=device,
+    )
+    # 從 BC 的離線資料初始化 Q buffer
+    qbuffer.fill_buffer_from_BC(input_data)
+
+    # ----------------------------------------------------------
+    # 7. 純 evaluation 模式（iters=0 且有設定 test episodes）
+    # ----------------------------------------------------------
+    if iters == 0 and num_test_episodes > 0:
+        success_rate = test_agent(
+            env,
+            ac,
+            num_test_episodes,
+            act_limit,
+            horizon,
+            robosuite,
+            logger_kwargs,
+            epoch=0,
+        )
+        print("Final Success Rate:", success_rate)
+        sys.exit(0)
+
+    # ----------------------------------------------------------
+    # 8. 利用 offline data 先做 pre-training (BC)
+    # ----------------------------------------------------------
+
+    if bc_checkpoint is not None and os.path.isfile(bc_checkpoint):
+        print(f"[BC] Loading pretrained BC policy from {bc_checkpoint}")
+        try:
+            ac_loaded = torch.load(
+                bc_checkpoint, map_location=device, weights_only=False
+            )
+        except TypeError:
+            ac_loaded = torch.load(bc_checkpoint, map_location=device)
+        ac = ac_loaded.to(device)
+        ac.device = device
+
+        # 更新 target network
+        ac_targ = deepcopy(ac)
+        for p in ac_targ.parameters():
+            p.requires_grad = False
+
+        # 重新註冊到 logger（確保之後 save_state 存的是這個 ac）
+        logger.setup_pytorch_saver(ac)
+
+    elif skip_bc_pretrain:
+        # 使用者要求跳過 pretrain，但又沒有可用的 checkpoint → 直接報錯
+        raise ValueError(
+            "skip_bc_pretrain=True but no valid bc_checkpoint is found.\n"
+            "Please either:\n"
+            "  (1) run once with --save_bc_checkpoint to create a BC checkpoint, or\n"
+            "  (2) provide a valid --bc_checkpoint path."
+        )
+    else:
+        # 正常情況：先跑一次 BC pretrain
+        print("[BC] Starting offline BC pretraining...")
+        pi_optimizers = pretrain_policies(
+            ac,
+            replay_buffer,
+            held_out_data,
+            grad_steps,
+            bc_epochs,
+            batch_size,
+            replay_size,
+            obs_dim,
+            act_dim,
+            device,
+            pi_lr,
+        )
+        print("[BC] Pretraining finished.")
+
+        # 若指定要存 checkpoint，就把 ac 存起來
+        if save_bc_checkpoint is not None:
+            save_dir = os.path.dirname(save_bc_checkpoint)
+            if save_dir:
+                os.makedirs(save_dir, exist_ok=True)
+            torch.save(ac, save_bc_checkpoint)
+            print(f"[BC] Saved pretrained BC policy to {save_bc_checkpoint}")
+
+    # ----------------------------------------------------------
+    # 9. 初始化統計量與 thresholds
+    # ----------------------------------------------------------
+    switch2robot_thresh, switch2human_thresh = estimate_initial_thresholds(
+        ac, replay_buffer, held_out_data, target_rate
+    )
+    print("Estimated switch to expert threshold:", switch2human_thresh, flush=True)
+    print("Estimated switch-back threshold:", switch2robot_thresh, flush=True)
+
+    threshold_cfg = ThresholdConfig()
+    qrisk_cfg = QRiskConfig()
+
+    switch2human_thresh2 = threshold_cfg.init_eps_H
+    switch2robot_thresh2 = threshold_cfg.init_eps_R
+
+    # ----------------------------------------------------------
+    # 9-1. 初始化 Recovery Policy
+    # ----------------------------------------------------------
+    if recovery_type.lower() == "q":
+        recovery_policy = QRecovery(
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            hidden_sizes=ac_kwargs.get("hidden_sizes", (256, 256)),
+            activation=ac_kwargs.get("activation", nn.ReLU),
+            q_risk=ac.safety,
+        )
+        print("Using QRecovery (single Q-network)")
+    elif recovery_type.lower() == "five_q":
+        recovery_policy = FiveQRecovery(
+            observation_space=env.observation_space,
+            action_space=env.action_space,
+            hidden_sizes=ac_kwargs.get("hidden_sizes", (256, 256)),
+            activation=ac_kwargs.get("activation", nn.ReLU),
+            num_nets=recovery_kwargs.get("num_nets", num_nets),
+            variance_weight=recovery_kwargs.get("variance_weight", 1.0),
+            q_risk=ac.safety,
+        )
+        print(
+            f"Using FiveQRecovery (5 Q-networks, variance_weight={recovery_kwargs.get('variance_weight', 1.0)})"
+        )
+    elif recovery_type.lower() == "expert":
+        print("Using Expert Recovery Policy")
+    else:
+        raise ValueError(f"Unknown recovery_type: {recovery_type}")
+
+    torch.cuda.empty_cache()
+    replay_buffer.fill_buffer(held_out_data["obs"], held_out_data["act"])
+
+    # 訓練過程中統計資訊
+    total_env_interacts = 0  # 環境互動的總步數
+    ep_num = 0  # 總 episode 數
+    record_ep_num = 0  # 紀錄 h5py 檔案所用的計數器，不管有沒有done都累加
+    fail_ct = 0  # 失敗 episode 數（超過 horizon）
+    online_burden = 0  # supervisor 標註總數
+    online_burden_recovery = 0  # recovery policy 標註總數
+    total_burden = 0  # Total number of querying the expert
+    num_switch_to_novel = 0  # 因 novelty 切到 human 次數
+    num_switch_to_exp = 0
+    num_switch_to_recovery = 0  # 因 risk 切到 human 次數
+    num_switch_to_robot = 0  # 從 human/recovery 切回 robot 次數
+
+    # ----------------------------------------------------------
+    # 10. Main ThriftyDAgger Loop
+    # ----------------------------------------------------------
+    best_success_rate = -1.0
+    best_model: Optional[Any] = None
+
+    for epoch_idx in range(iters + 1):
+        epoch_data = []
+        # --------------------------------------------------
+        # 10-1. 線上資料收集（epoch 0 跳過，保留給純 Q-training）
+        # --------------------------------------------------
+        step_count = 0
+        if epoch_idx == 0:
+            step_count = obs_per_iter  # 不跑 while loop
+
+        logging_data: List[Dict[str, Any]] = []
+        estimates: List[float] = []
+        estimates2: List[float] = []
+
+        while step_count < obs_per_iter:
+            expert_policy.start_episode()
+            recovery_policy.start_episode()
+
+            o, _ = env.reset()
+            done = False
+
+            expert_mode = False
+            safety_mode = False
+            ep_len = 0
+            episode_reward = 0
+
+            # episode 累積的軌跡
+            obs, act, rew, done_flags, sup, var, risk = (
+                [o],  # 初始 obs
+                [],  # actions
+                [],  # rewards
+                [],  # done flags
+                [],  # sup 標記（0: robot, 1: expert mode, 2: recovery policy）
+                [ac.variance(o)],  # 初始 state 的 variance
+                [],  # safety scores
+            )
+
+            if robosuite:
+                simstates = [env.env.sim.get_state().flatten()]
+
+            while step_count < obs_per_iter and not done:
+                a_robot = ac.act(o)
+                a_robot = np.clip(a_robot, -act_limit, act_limit)
+                a_expert = expert_policy(o)
+                a_recovery = recovery_policy.run(
+                    o,
+                    a_robot,
+                    steps=recovery_kwargs.get("steps", 20),
+                    lr=recovery_kwargs.get("lr", 0.01),
+                    action_bounds=(-act_limit, act_limit),
+                )
+                s_flag = False
+
+                estimates.append(ac.variance(o))
+                estimates2.append(ac.safety(o, a_robot))
+
+                # --------------------------------------------------
+                # 檢查是否需要切到 human：novelty / risk
+                # --------------------------------------------------
+                if wandb.run is not None:
+                    wandb.log(
+                        {
+                            "step_variance": float(ac.variance(o)),
+                            "step_qrisk": float(ac.safety(o, a_robot)),
+                            "training_step": total_env_interacts + step_count,
+                        },
+                    )
+                if not expert_mode and ac.variance(o) > switch2human_thresh:
+                    print("Switch to Expert (Novel)")
+                    num_switch_to_novel += 1
+                    num_switch_to_exp += 1
+                    expert_mode = True
+
+                elif (
+                    not (expert_mode or safety_mode)
+                    and ac.safety(o, a_robot) < switch2human_thresh2
+                ):
+                    print("Switch to Recovery (Risk)")
+                    num_switch_to_recovery += 1
+                    if recovery_type.lower() == "expert":
+                        num_switch_to_exp += 1
+                    safety_mode = True
+
+                # --------------------------------------------------
+                # expert_mode：由 human expert 控制
+                # --------------------------------------------------
+                if expert_mode:
+                    a_expert = np.clip(a_expert, -act_limit, act_limit)
+
+                    replay_buffer.store(o, a_expert)
+                    online_burden += 1
+                    total_burden += 1
+                    # safety critic 對 expert action 的評分
+                    risk.append(float(ac.safety(o, a_expert)))
+
+                    o2, r, terminated, truncated, _ = env.step(a_expert)
+                    episode_reward += r
+                    s_flag = env.is_success()
+                    done = terminated or truncated or s_flag or (ep_len + 1 >= horizon)
+
+                    act.append(a_expert)
+                    sup.append(1)  # 1 = supervised expert mode (controlled by expert)
+
+                    qbuffer.store(o, a_expert, o2, r, done)
+
+                    if np.sum((a_robot - a_expert) ** 2) < switch2robot_thresh:
+                        print("Switch to Robot from Novelty")
+                        expert_mode = False
+                        num_switch_to_robot += 1
+
+                # --------------------------------------------------
+                # safety_mode：由 recovery policy 控制
+                # --------------------------------------------------
+                elif safety_mode:
+                    a_recovery = recovery_policy.run(o, a_robot)
+                    a_recovery = np.clip(a_recovery, -act_limit, act_limit)
+                    replay_buffer.store(o, a_recovery)
+                    online_burden_recovery += 1
+                    if recovery_type == "expert":
+                        total_burden += 1
+                    risk.append(float(ac.safety(o, a_recovery)))
+
+                    o2, r, terminated, truncated, _ = env.step(a_recovery)
+                    episode_reward += r
+                    s_flag = env.is_success()
+                    done = terminated or truncated or s_flag or (ep_len + 1 >= horizon)
+
+                    act.append(a_recovery)
+                    sup.append(
+                        2
+                    )  # 2 = supervised safety mode (controlled by recovery policy)
+                    qbuffer.store(o, a_recovery, o2, r, done)
+
+                    if ac.safety(o, a_robot) > switch2robot_thresh2:
+                        print("Switch to Robot from Recovery")
+                        safety_mode = False
+                        num_switch_to_robot += 1
+
+                # --------------------------------------------------
+                # 一般情況：由 robot policy 控制
+                # --------------------------------------------------
+                else:
+                    risk.append(float(ac.safety(o, a_robot)))
+                    o2, r, terminated, truncated, _ = env.step(a_robot)
+                    episode_reward += r
+                    s_flag = env.is_success()
+                    done = terminated or truncated or s_flag or (ep_len + 1 >= horizon)
+
+                    act.append(a_robot)
+                    sup.append(0)
+
+                    qbuffer.store(o, a_robot, o2, r, done)
+
+                done_flags.append(done)
+                rew.append(int(s_flag))
+
+                o = o2
+                obs.append(o)
+
+                if robosuite:
+                    simstates.append(env.env.sim.get_state().flatten())
+
+                var.append(float(ac.variance(o)))
+
+                step_count += 1
+                ep_len += 1
+
+            record_ep_num += 1
+            if done:
+                ep_num += 1
+                print("episode done", flush=True)
+            else:
+                print("episode not done", flush=True)
+            # === Save per-episode ball trajectory ===
+
+            total_env_interacts += ep_len
+
+            episode_dict: Dict[str, Any] = {
+                "obs": np.stack(obs),
+                "act": np.stack(act),
+                "done": np.array(done_flags),
+                "rew": np.array(rew),
+                "sup": np.array(sup),
+                "var": np.array(var),
+                "risk": np.array(risk),
+                "beta_H": switch2human_thresh,
+                "beta_R": switch2robot_thresh,
+                "eps_H": switch2human_thresh2,
+                "eps_R": switch2robot_thresh2,
+                "simstates": np.array(simstates) if robosuite else None,
+            }
+            logging_data.append(episode_dict)
+
+            epoch_data.append(
+                {
+                    "obs": np.array(obs),
+                    "act": np.array(act),
+                    "rew": np.array(rew),
+                    "done": np.array(done),
+                }
+            )
+
+            pickle.dump(
+                logging_data,
+                open(
+                    os.path.join(logger_kwargs["output_dir"], f"iter{epoch_idx}.pkl"),
+                    "wb",
+                ),
+            )
+            with h5py.File(
+                os.path.join(
+                    logger_kwargs["output_dir"],
+                    f"epoch{epoch_idx}_trajectories.hdf5",
+                ),
+                "a",
+            ) as hdf5_trajectories_file:
+                hdf5_trajectories_file[f"training/episode{record_ep_num}/position"] = (
+                    np.array(obs)[:, 0:2]
+                )
+                hdf5_trajectories_file[f"training/episode{record_ep_num}/policy"] = (
+                    np.array(sup)
+                )
+
+            # online 更新 switching thresholds
+            if (
+                len(estimates) > threshold_cfg.min_estimates_for_update
+                and not fix_thresholds
+            ):
+                target_idx = int((1 - target_rate) * len(estimates2))
+                # switch2human_thresh = sorted(estimates)[target_idx]
+                switch2human_thresh2 = sorted(estimates2, reverse=True)[target_idx]
+                # switch2robot_thresh2 = sorted(estimates2)[int(0.5 * len(estimates))]
+
+                print(
+                    "len(estimates): {}, New switch thresholds: {} {} {}".format(
+                        len(estimates),
+                        switch2human_thresh,
+                        switch2human_thresh2,
+                        switch2robot_thresh2,
+                    ),
+                    flush=True,
+                )
+
+        # --------------------------------------------------
+        # 10-2. retrain policy
+        # --------------------------------------------------
+        ac_new, pi_optimizers, avg_loss_pi = retrain_policy(
+            actor_critic,
+            env,
+            device,
+            num_nets,
+            ac_kwargs,
+            replay_buffer,
+            replay_size,
+            obs_dim,
+            act_dim,
+            pi_lr,
+            grad_steps,
+            bc_epochs,
+            epoch_idx,
+            batch_size,
+        )
+        if ac_new is not None:
+            ac = ac_new
+
+        # --------------------------------------------------
+        # 10-2. Evaluate current policy
+        # --------------------------------------------------
+
+        success_rate = test_agent(
+            env,
+            ac,
+            num_test_episodes,
+            act_limit,
+            horizon,
+            robosuite,
+            logger_kwargs,
+            epoch=epoch_idx,
+        )
+        print("Epoch {}: Success Rate {:.3f}".format(epoch_idx, success_rate))
+
+        # 若成功率變好，更新 best model 並馬上存檔
+        if success_rate > best_success_rate:
+            best_success_rate = success_rate
+            best_model = deepcopy(ac)
+            ckpt_dir = logger_kwargs.get("output_dir", ".")
+            os.makedirs(ckpt_dir, exist_ok=True)
+            ckpt_path = os.path.join(ckpt_dir, "best_model.pt")
+
+            torch.save(best_model, ckpt_path)
+            print(
+                f"[Checkpoint] Success improved to {best_success_rate:.3f}, saved best model at {ckpt_path}"
+            )
+
+        # --------------------------------------------------
+        # 10-3. retrain Q-risk safety critic
+        # --------------------------------------------------
+
+        try:
+            data = pickle.load(open("test-rollouts.pkl", "rb"))
+            qbuffer.fill_buffer(data)
+            os.remove("test-rollouts.pkl")
+        except OSError:
+            pass
+
+        avg_loss_q = retrain_qrisk(
+            ac=ac,
+            ac_targ=ac_targ,
+            qbuffer=qbuffer,
+            num_test_episodes=num_test_episodes,
+            expert_policy=expert_policy,
+            recovery_policy=recovery_policy,
+            env=env,
+            act_limit=act_limit,
+            horizon=horizon,
+            robosuite=robosuite,
+            logger_kwargs=logger_kwargs,
+            pi_lr=pi_lr,
+            bc_epochs=bc_epochs,
+            grad_steps=grad_steps,
+            gamma=gamma,
+            batch_size=batch_size,
+            qrisk_cfg=qrisk_cfg,
+            epoch_idx=epoch_idx,
+            risk_probe=risk_probe,
+        )
+
+        # --------------------------------------------------
+        # 10-4. end-of-epoch logging
+        # --------------------------------------------------
+        logger.save_state(dict())
+
+        log_epoch(
+            logger=logger,
+            epoch_idx=epoch_idx,
+            ep_num=ep_num,
+            success_rate=success_rate,
+            total_env_interacts=total_env_interacts,
+            online_burden=online_burden,
+            online_burden_recovery=online_burden_recovery,
+            total_burden=total_burden,
+            num_switch_to_novel=num_switch_to_novel,
+            num_switch_to_exp=num_switch_to_exp,
+            num_switch_to_recovery=num_switch_to_recovery,
+            num_switch_to_robot=num_switch_to_robot,
+            loss_pi=avg_loss_pi,
+            loss_q=avg_loss_q,
+            switch2robot_thresh=switch2robot_thresh,
+            switch2human_thresh=switch2human_thresh,
+            switch2robot_thresh2=switch2robot_thresh2,
+            switch2human_thresh2=switch2human_thresh2,
+        )
+
+        # --------------------------------------------------
+        # 10-5. 早停條件：supervisor label 達上限
+        # --------------------------------------------------
+        if total_burden >= max_expert_query:
+            print("Reached max expert queries, stopping training.")
+            break
+
+    # ------------------------------------------------------
+    # 11. 訓練結束後：用 best model 再 eval 並存最終模型
+    # ------------------------------------------------------
+    if best_model is not None:
+        ac_for_eval = best_model
+    else:
+        ac_for_eval = ac
+
+    if num_test_episodes > 0:
+        final_success_rate = test_agent(
+            env,
+            ac_for_eval,
+            num_test_episodes,
+            act_limit,
+            horizon,
+            robosuite,
+            logger_kwargs,
+            epoch=iters + 1,
+        )
+        print("Final Eval (Best Model): Success Rate {:.3f}".format(final_success_rate))
+
+    # 存最終模型（使用 best model 若有），固定檔名 final_model.pt
+    ckpt_dir = logger_kwargs.get("output_dir", ".")
+    os.makedirs(ckpt_dir, exist_ok=True)
+    save_path = os.path.join(ckpt_dir, "final_model.pt")
+
+    torch.save(ac_for_eval, save_path)
+    print(f"[Final Model] Saved final (best) model to {save_path}")

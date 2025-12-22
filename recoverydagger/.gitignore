@@ -1,0 +1,16 @@
+*.*~
+__pycache__/
+data/
+dist/
+**/*.egg-info
+.python-version
+.idea/
+.vscode/
+.DS_Store
+_build/
+plots/
+wandb/
+nohup.out
+output*.txt
+job*.sh
+test-rollouts.pkl
