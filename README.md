@@ -7,19 +7,17 @@
 [![Issues][issues-shield]][issues-url]
 [![MIT license][license-shield]][license-url]
 
-<h1 align="center">RecoveryDagger</h1>
+<h1 align="center">RecoveryDAgger</h1>
 
   <p align="center">
     Query-Efficient Online Imitation Learning Through Recovery Policy
     <br />
-    <!-- <a href="https://github.com/NTU-RL2025-02/RecoveryDagger"><strong>Explore the docs »</strong></a> -->
+    <!-- <a href="https://github.com/NTU-RL2025-02/RecoveryDAgger"><strong>Explore the docs »</strong></a> -->
     <!-- <br /> -->
     <br />
-    <a href="https://github.com/NTU-RL2025-02/RecoveryDagger/blob/main/Report.pdf">Paper</a>
+    <a href="https://github.com/NTU-RL2025-02/RecoveryDAgger/blob/main/Report.pdf">Paper</a>
     &middot;
     <a href="https://docs.google.com/presentation/d/1ntnNjOAhUretADrlI4ycZFx2BClxzAWE0GYV3HPjv28/edit?usp=sharing">Slides</a>
-    &middot;
-    <a href="https://github.com/NTU-RL2025-02/RecoveryDagger/">Website</a>
   </p>
 </div>
 
@@ -28,10 +26,7 @@
   <summary>Table of Contents</summary>
   <ol>
     <li>
-      <a href="#about-the-project">About The Project</a>
-      <ul>
-        <li><a href="#built-with">Built With</a></li>
-      </ul>
+      <a href="#abstract">About The Project</a>
     </li>
     <li>
       <a href="#getting-started">Getting Started</a>
@@ -48,11 +43,7 @@
 
 <!-- ABOUT THE PROJECT -->
 
-## Abstract
-
-[![Product Name Screen Shot][product-screenshot]](https://example.com)
-
-Here's a blank template to get started. To avoid retyping too much info, do a search and replace with your text editor for the following: `NTU-RL2025-02`, `RecoveryDagger`, `twitter_handle`, `linkedin_username`, `email_client`, `email`, `project_title`, `project_description`, `MIT license`
+## About RecoveryDAgger
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -60,37 +51,37 @@ Here's a blank template to get started. To avoid retyping too much info, do a se
 
 ## Getting Started
 
-This is an example of how you may give instructions on setting up your project locally.
-To get a local copy up and running follow these simple example steps.
-
 ### Prerequisites
 
-This is an example of how to list things you need to use the software and how to install them.
-
-- npm
-  ```sh
-  npm install npm@latest -g
-  ```
+- Conda
+- Python >= 3.10
 
 ### Installation
 
-1. Get a free API Key at [https://example.com](https://example.com)
-2. Clone the repo
+1. Clone the repo or download the source code in the release section.
    ```sh
-   git clone https://github.com/NTU-RL2025-02/RecoveryDagger.git
+   git clone https://github.com/NTU-RL2025-02/RecoveryDAgger.git
    ```
-3. Install NPM packages
+2. Create and activate the env
+
    ```sh
-   npm install
+    conda create -n recoverydagger python=3.10
+    conda activate recoverydagger
    ```
-4. Enter your API in `config.js`
-   ```js
-   const API_KEY = "ENTER YOUR API";
-   ```
-5. Change git remote url to avoid accidental pushes to base project
+
+3. Install PyTorch for your platform (pick the right command from [https://pytorch.org](https://pytorch.org))
+
    ```sh
-   git remote set-url origin NTU-RL2025-02/RecoveryDagger
-   git remote -v # confirm the changes
+   # Example: CPU / Apple Silicon
+   pip install torch torchvision
+   # Example: CUDA 12.1
+   # pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+   ```
+
+4. Install project packages (from repo root)
+
+   ```sh
+   pip install -e recoverydagger
    ```
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
@@ -99,9 +90,50 @@ This is an example of how to list things you need to use the software and how to
 
 ## Usage
 
-Use this space to show useful examples of how a project can be used. Additional screenshots, code examples and demos work well in this space. You may also link to more resources.
+### Data collection
 
-_For more examples, please refer to the [Documentation](https://example.com)_
+1. Offline dataset are provited in `models/demonstrations/offline_data_100.pkl`
+2. In case you want to regenerate offline dataset,
+<!--TODO: 補充-->
+
+### Training
+
+1. Retrain RecoveryDAgger from start
+
+```sh
+python3 scripts/train.py \
+    --seed 48763 \
+    --device 0 \
+    --iters 100 \
+    --demonstration_set_file "models/demonstrations/offline_data_100.pkl" \
+    --environment "PointMaze_4rooms-v3" \
+    --recovery_type "q" \
+    --num_test_episodes "100" \
+    --noisy_scale "1.0" \
+    --save_bc_checkpoint "models/bc_models/4room_rule_base_100.pt" \
+    --fix_thresholds \
+    sample_experiment
+```
+
+2. Use pretrained BC model for further training
+
+```sh
+python3 scripts/train.py \
+    --seed 48763 \
+    --device 0 \
+    --iters 100 \
+    --demonstration_set_file "models/demonstrations/offline_data_100.pkl" \
+    --environment "PointMaze_4rooms-v3" \
+    --recovery_type "q" \  # "q", "five_q", or "expert" (for thriftydagger baseline)
+    --num_test_episodes "100" \
+    --fix_thresholds \
+    --noisy_scale "1.0" \
+    --skip_bc_pretrain \
+    --bc_checkpoint $BC_CHECKPOINT_PATH \
+    sample_load_bc_experiment
+```
+
+### Evaluation
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 <!-- CONTRIBUTING -->
@@ -142,16 +174,16 @@ Distributed under the MIT license. See `LICENSE.txt` for more information.
 <!-- MARKDOWN LINKS & IMAGES -->
 <!-- https://www.markdownguide.org/basic-syntax/#reference-style-links -->
 
-[contributors-shield]: https://img.shields.io/github/contributors/NTU-RL2025-02/RecoveryDagger.svg?style=for-the-badge
-[contributors-url]: https://github.com/NTU-RL2025-02/RecoveryDagger/graphs/contributors
-[forks-shield]: https://img.shields.io/github/forks/NTU-RL2025-02/RecoveryDagger.svg?style=for-the-badge
-[forks-url]: https://github.com/NTU-RL2025-02/RecoveryDagger/network/members
-[stars-shield]: https://img.shields.io/github/stars/NTU-RL2025-02/RecoveryDagger.svg?style=for-the-badge
-[stars-url]: https://github.com/NTU-RL2025-02/RecoveryDagger/stargazers
-[issues-shield]: https://img.shields.io/github/issues/NTU-RL2025-02/RecoveryDagger.svg?style=for-the-badge
-[issues-url]: https://github.com/NTU-RL2025-02/RecoveryDagger/issues
-[license-shield]: https://img.shields.io/github/license/NTU-RL2025-02/RecoveryDagger.svg?style=for-the-badge
-[license-url]: https://github.com/NTU-RL2025-02/RecoveryDagger/blob/main/LICENSE.txt
+[contributors-shield]: https://img.shields.io/github/contributors/NTU-RL2025-02/RecoveryDAgger.svg?style=for-the-badge
+[contributors-url]: https://github.com/NTU-RL2025-02/RecoveryDAgger/graphs/contributors
+[forks-shield]: https://img.shields.io/github/forks/NTU-RL2025-02/RecoveryDAgger.svg?style=for-the-badge
+[forks-url]: https://github.com/NTU-RL2025-02/RecoveryDAgger/network/members
+[stars-shield]: https://img.shields.io/github/stars/NTU-RL2025-02/RecoveryDAgger.svg?style=for-the-badge
+[stars-url]: https://github.com/NTU-RL2025-02/RecoveryDAgger/stargazers
+[issues-shield]: https://img.shields.io/github/issues/NTU-RL2025-02/RecoveryDAgger.svg?style=for-the-badge
+[issues-url]: https://github.com/NTU-RL2025-02/RecoveryDAgger/issues
+[license-shield]: https://img.shields.io/github/license/NTU-RL2025-02/RecoveryDAgger.svg?style=for-the-badge
+[license-url]: https://github.com/NTU-RL2025-02/RecoveryDAgger/blob/main/LICENSE.txt
 [linkedin-shield]: https://img.shields.io/badge/-LinkedIn-black.svg?style=for-the-badge&logo=linkedin&colorB=555
 [linkedin-url]: https://linkedin.com/in/linkedin_username
 [product-screenshot]: images/screenshot.png
