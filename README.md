@@ -270,7 +270,7 @@ python3 train.py \
 To evaluate a trained model:
 
 ```sh
-python eval.py data/sample/best_model.pt \
+python eval.py data/sample/best_model_five_q.pt \
     --environment "PointMaze_4rooms-v3" \
     --iters 100 \
     --noisy_scale 1.0
