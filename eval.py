@@ -11,30 +11,37 @@ Options:
     --q_heatmap             : Whether to draw Q-value heatmap
 """
 
+# --- stdlib ---
+import argparse
+import sys
 from typing import Any
+
+# --- third-party ---
+import gymnasium as gym
+import gymnasium_robotics  # noqa: F401
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import argparse
+from gymnasium.wrappers import FlattenObservation
 from tqdm import trange
-import matplotlib.pyplot as plt
-import seaborn as sns
+
+# --- local (your project) ---
+import recoverydagger
+
+# module alias for backward-compat (old checkpoints / pickles)
+sys.modules["thrifty_gym"] = recoverydagger
+
+from recoverydagger.maze import (
+    COMPLICATED_MAZE,
+    FOUR_ROOMS_21_21,
+    FOUR_ROOMS_21_21_LEFT_UP_RANDOM,
+    FOUR_ROOMS_ANGLE,
+    FOUR_ROOMS_ANGLE_SINGLE_START,
+)
 from recoverydagger.utils.wrappers import (
     MazeWrapper,
     NoisyActionWrapper,
 )
-
-from recoverydagger.maze import (
-    FOUR_ROOMS_ANGLE,
-    FOUR_ROOMS_ANGLE_SINGLE_START,
-    FOUR_ROOMS_21_21,
-    FOUR_ROOMS_21_21_LEFT_UP_RANDOM,
-    COMPLICATED_MAZE,
-)
-from recoverydagger.algos.rule_expert import RuleBasedExpert
-
-import gymnasium as gym
-import gymnasium_robotics
-from gymnasium.wrappers import FlattenObservation
 
 
 @torch.no_grad()

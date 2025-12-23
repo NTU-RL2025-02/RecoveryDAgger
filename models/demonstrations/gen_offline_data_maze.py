@@ -13,7 +13,7 @@ Defaults:
     env_id: PointMaze_Medium-v3
     episodes: 10
     max_steps: 1300
-    output: offline_dataset_aawmaze_10.pkl
+    output: offline_dataset_10.pkl
 
 Notes:
     - Saved pickle contains: obs, act, next_observations, rew, done, episode_starts.
@@ -72,7 +72,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=root / "offline_dataset_aawmaze_10.pkl",
+        default=root / "demonstrations/offline_dataset_10.pkl",
         help="Where to store the collected dataset (pickle).",
     )
     parser.add_argument(

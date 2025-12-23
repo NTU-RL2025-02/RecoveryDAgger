@@ -194,9 +194,9 @@ This section describes how to collect data, train models, and evaluate trained p
 
 2. If you wish to regenerate the offline dataset from scratch, please refer to the data collection scripts.
 
-<!-- ```sh
-python models/demonstrations/gen_offline_data_maze.py --rule-base-expert [--episodes] [--max_steps] [--output ][--deterministic][--seed] [--min_return ]
-``` -->
+```sh
+python models/demonstrations/gen_offline_data_maze.py --rule-base-expert --episodes 50 --output models/demonstrations/offline_data_50.pkl
+```
 
 ### Training
 
@@ -230,7 +230,7 @@ python3 train.py \
     --iters 100 \
     --demonstration_set_file "models/demonstrations/offline_data_100.pkl" \
     --environment "PointMaze_4rooms-v3" \
-    --recovery_type "q" \
+    --recovery_type "five_q" \
     --num_test_episodes 100 \
     --fix_thresholds \
     --noisy_scale 1.0 \

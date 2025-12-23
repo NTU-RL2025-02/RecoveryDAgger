@@ -12,16 +12,20 @@ from typing import Any, Dict, List, Optional, Tuple
 import h5py
 import wandb
 from pathlib import Path
+import sys
 
 import numpy as np
 import torch
 import torch.nn as nn
 from torch.optim import Adam
 
+import recoverydagger
 import recoverydagger.algos.core as core
 from recoverydagger.utils.logx import EpochLogger
 from recoverydagger.algos.buffer import ReplayBuffer, QReplayBuffer
 from recoverydagger.algos.recovery import QRecovery, FiveQRecovery
+
+sys.modules["thrifty_gym"] = recoverydagger
 
 
 # ----------------------------------------------------------------------
