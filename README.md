@@ -186,10 +186,11 @@ pip install -e .
 
 ## Usage
 
+> **Note:** All commands should be executed from the project root directory  
+> (i.e., the directory that contains this `README.md` file).
+
 > **Tip:** All Python scripts support the `--help` flag.  
 > You can run `python <script>.py --help` to see all available options and their descriptions.
-
-This section describes how to collect data, train models, and evaluate trained policies.
 
 ### Data Collection
 
