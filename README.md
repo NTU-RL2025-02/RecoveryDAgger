@@ -295,9 +295,12 @@ Distributed under the MIT license. See `LICENSE.txt` for more information.
 
 ## Acknowledgments
 
-- []()
-- []()
-- []()
+This project is forked from the
+[thriftydagger](https://github.com/ryanhoque/thriftydagger) repository.
+
+While the codebase has been significantly modified and extended,
+we gratefully acknowledge the original authors for providing
+the initial implementation and research foundation.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
