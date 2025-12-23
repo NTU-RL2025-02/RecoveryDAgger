@@ -8,7 +8,7 @@ assert (
 setup(
     name="recoverydagger",
     py_modules=["recoverydagger"],
-    version="0.1.0",
+    version="0.1.1",
     install_requires=[
         "mujoco",
         "cloudpickle",
