@@ -215,7 +215,7 @@ This command trains RecoveryDAgger starting from behavior cloning (BC) pretraini
 python3 train.py \
     --seed 48763 \
     --device 0 \
-    --iters 100 \
+    --iters 30 \
     --demonstration_set_file "models/demonstrations/offline_data_100.pkl" \
     --environment "PointMaze_4rooms-v3" \
     --recovery_type "q" \
@@ -236,7 +236,7 @@ If you already have a pretrained behavior cloning model, you can skip BC pretrai
 python3 train.py \
     --seed 48763 \
     --device 0 \
-    --iters 100 \
+    --iters 30 \
     --demonstration_set_file "models/demonstrations/offline_data_100.pkl" \
     --environment "PointMaze_4rooms-v3" \
     --recovery_type "five_q" \
