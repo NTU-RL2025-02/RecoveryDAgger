@@ -76,6 +76,8 @@ def eval(
 
     total_success = 0
 
+    trajectories = []
+
     for iter in trange(total_iterations):
         np.random.seed(iter)
         torch.manual_seed(iter)
@@ -101,9 +103,10 @@ def eval(
 
         ball_x, ball_y = o[0], o[1]
         ball_traj.append([ball_x, ball_y])
+        trajectories.append(np.array(ball_traj))
 
     success_rate = total_success / total_iterations
-    return success_rate, np.array(ball_traj)
+    return success_rate, trajectories
 
 
 def ij_to_xy(i, j, maze):
@@ -208,6 +211,57 @@ def draw_q_heatmap(ac, maze, obs0):
     plt.savefig("q_heatmap.png", dpi=400)
     plt.show()
 
+
+def plot_trajectories(
+    episodes_obs, 
+    maze_layout,
+) -> None:
+
+    # 2. 建立圖
+    plt.figure(figsize=(8, 8))
+    plt.title(f"Evaluation Trajectories")
+    plt.xlabel("X position")
+    plt.ylabel("Y position")
+    plt.axis("equal")
+
+    # 3. 畫迷宮牆
+    if maze_layout == "PointMaze_4rooms-v3":
+        maze = FOUR_ROOMS_21_21
+    elif maze_layout == "PointMaze_4rooms-v3-angle" or maze_layout == "PointMaze_4rooms-v3-angle-single-start":
+        maze = FOUR_ROOMS_ANGLE
+    elif maze_layout == "PointMaze_Complicated-v3":
+        maze = COMPLICATED_MAZE
+    else:
+        raise ValueError("Unsupported maze layout: {}".format(maze_layout))
+
+    width = len(maze[0])
+    height = len(maze)
+    for i, row in enumerate(maze):
+        for j, cell in enumerate(row):
+            if cell == 1:  # Wall
+                x = j - width / 2
+                y = -i + height / 2
+                plt.fill_between([x, x + 1], [y - 1, y - 1], [y, y], color="yellow")
+
+    # 4. 畫每條 episode 軌跡
+    # 假設 obs 的前兩個維度是 (x, y)
+    for ep_idx, ep_obs in enumerate(episodes_obs):
+
+        xs = ep_obs[:, 0]
+        ys = ep_obs[:, 1]
+
+        # 畫軌跡線
+        plt.plot(xs, ys, alpha=0.5, linewidth=1)
+
+        # 起點/終點標記（可選）
+        plt.scatter(xs[0], ys[0], marker="o", s=8)  # start
+        plt.scatter(xs[-1], ys[-1], marker="x", s=8, linewidths=0.5)  # end
+
+    # 5. 輸出或顯示
+    plt.tight_layout()
+    plt.savefig("evaluation_trajectories", bbox_inches="tight")
+    plt.show()
+    print(f"Plot saved to evaluation_trajectories.png")
 
 def make_env(args):
     gym.register_envs(gymnasium_robotics)
@@ -344,6 +398,12 @@ if __name__ == "__main__":
         help=("Compute and save a Q-value heatmap (q_heatmap.png). "),
     )
 
+    parser.add_argument(
+        "--trajectory",
+        action="store_true",
+        help=("Draw trajectories of testing episodes (evaluation_trajectories.png). "),
+    )
+
     parser.set_defaults(render=False, q_heatmap=False)
     args = parser.parse_args()
 
@@ -365,3 +425,6 @@ if __name__ == "__main__":
     print(f"Success rate over {args.iters} episodes: {success_rate}")
     if args.q_heatmap:
         draw_q_heatmap(ac, env.maze, env.reset()[0])
+    
+    if args.trajectory:
+        plot_trajectories(ball_traj, args.environment)
