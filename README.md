@@ -11,10 +11,7 @@
 
   <p align="center">
     Query-Efficient Online Imitation Learning Through Recovery Policy
-    <br />
-    <!-- <a href="https://github.com/NTU-RL2025-02/RecoveryDAgger"><strong>Explore the docs »</strong></a> -->
-    <!-- <br /> -->
-    <br />
+    <br /> <br />
     <a href="https://github.com/NTU-RL2025-02/RecoveryDAgger/blob/main/Report.pdf">Paper</a>
     &middot;
     <a href="https://docs.google.com/presentation/d/1ntnNjOAhUretADrlI4ycZFx2BClxzAWE0GYV3HPjv28/edit?usp=sharing">Slides</a>
@@ -41,64 +38,154 @@
   </ol>
 </details>
 
-<!-- ABOUT THE PROJECT -->
-
 ## About RecoveryDAgger
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
-
-<!-- GETTING STARTED -->
 
 ## Getting Started
 
 ### Prerequisites
 
-- Conda
-- Python >= 3.10
+Before installing the project, make sure you have the following dependencies installed:
+
+- **Python ≥ 3.10**
+- One of the following environment managers:
+
+  - **Conda** (Anaconda or Miniconda) _(recommended)_
+  - **Python venv**
 
 ### Installation
 
-1. Clone the repo or download the source code in the release section.
-   ```sh
-   git clone https://github.com/NTU-RL2025-02/RecoveryDAgger.git
-   ```
-2. Create and activate the env
+Follow the steps below to set up the environment and install the project.
 
-   ```sh
-    conda create -n recoverydagger python=3.10
-    conda activate recoverydagger
-   ```
+#### Option A: Using Conda (Recommended)
 
-3. Install PyTorch for your platform (pick the right command from [https://pytorch.org](https://pytorch.org))
+##### 1. Clone the repository
 
-   ```sh
-   # Example: CPU / Apple Silicon
-   pip install torch torchvision
-   # Example: CUDA 12.1
-   # pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-   ```
+```sh
+git clone https://github.com/NTU-RL2025-02/RecoveryDAgger.git
+cd RecoveryDAgger
+```
 
-4. Install project packages (from repo root)
+Alternatively, you may download the source code from the **Releases** section.
 
-   ```sh
-   pip install -e recoverydagger
-   ```
+##### 2. Create and activate a Conda environment
 
+```sh
+conda create -n recoverydagger python=3.10
+conda activate recoverydagger
+```
+
+##### 3. Install PyTorch
+
+Install PyTorch according to your platform.
+Please refer to the official PyTorch website for the latest instructions:
+
+👉 [https://pytorch.org](https://pytorch.org)
+
+Examples:
+
+```sh
+# CPU / Apple Silicon
+pip install torch torchvision
+```
+
+```sh
+# CUDA 12.1
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+```
+
+##### 4. Install project dependencies
+
+From the repository root directory:
+
+```sh
+pip install -e recoverydagger
+```
+
+---
+
+#### Option B: Using Python venv (Without Conda)
+
+<details>
+If Conda is not available, you can use Python’s built-in `venv` module instead.
+
+##### 1. Clone the repository
+
+```sh
+git clone https://github.com/NTU-RL2025-02/RecoveryDAgger.git
+cd RecoveryDAgger
+```
+
+##### 2. Create and activate a virtual environment
+
+```sh
+python3 -m venv venv
+```
+
+Activate the environment:
+
+- **macOS / Linux**
+
+  ```sh
+  source venv/bin/activate
+  ```
+
+- **Windows**
+
+  ```sh
+  venv\Scripts\activate
+  ```
+
+##### 3. Upgrade pip (recommended)
+
+```sh
+pip install --upgrade pip
+```
+
+##### 4. Install PyTorch
+
+Install PyTorch according to your platform:
+
+👉 [https://pytorch.org](https://pytorch.org)
+
+(Use the same commands as in Option A.)
+
+##### 5. Install project dependencies
+
+```sh
+pip install -e recoverydagger
+```
+
+</details>
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
-
-<!-- USAGE EXAMPLES -->
 
 ## Usage
 
-### Data collection
+> **Tip:** All Python scripts support the `--help` flag.  
+> You can run `python <script>.py --help` to see all available options and their descriptions.
 
-1. Offline dataset are provited in `models/demonstrations/offline_data_100.pkl`
-2. In case you want to regenerate offline dataset,
-<!--TODO: 補充-->
+This section describes how to collect data, train models, and evaluate trained policies.
+
+### Data Collection
+
+1. A pre-generated offline demonstration dataset is provided at:
+
+   ```
+   models/demonstrations/offline_data_100.pkl
+   ```
+
+2. If you wish to regenerate the offline dataset from scratch, please refer to the data collection scripts.
+
+<!-- ```sh
+python models/demonstrations/gen_offline_data_maze.py --rule-base-expert [--episodes] [--max_steps] [--output ][--deterministic][--seed] [--min_return ]
+``` -->
 
 ### Training
 
-1. Retrain RecoveryDAgger from start
+#### 1. Train RecoveryDAgger from scratch
+
+This command trains RecoveryDAgger starting from behavior cloning (BC) pretraining.
 
 ```sh
 python3 scripts/train.py \
@@ -108,14 +195,16 @@ python3 scripts/train.py \
     --demonstration_set_file "models/demonstrations/offline_data_100.pkl" \
     --environment "PointMaze_4rooms-v3" \
     --recovery_type "q" \
-    --num_test_episodes "100" \
-    --noisy_scale "1.0" \
+    --num_test_episodes 100 \
+    --noisy_scale 1.0 \
     --save_bc_checkpoint "models/bc_models/4room_rule_base_100.pt" \
     --fix_thresholds \
     sample_experiment
 ```
 
-2. Use pretrained BC model for further training
+#### 2. Continue training from a pretrained BC model
+
+If you already have a pretrained behavior cloning model, you can skip BC pretraining and continue training directly:
 
 ```sh
 python3 scripts/train.py \
@@ -124,16 +213,44 @@ python3 scripts/train.py \
     --iters 100 \
     --demonstration_set_file "models/demonstrations/offline_data_100.pkl" \
     --environment "PointMaze_4rooms-v3" \
-    --recovery_type "q" \  # "q", "five_q", or "expert" (for thriftydagger baseline)
-    --num_test_episodes "100" \
+    --recovery_type "q" \
+    --num_test_episodes 100 \
     --fix_thresholds \
-    --noisy_scale "1.0" \
+    --noisy_scale 1.0 \
     --skip_bc_pretrain \
-    --bc_checkpoint $BC_CHECKPOINT_PATH \
+    --bc_checkpoint "models/bc_models/4rooms_rule_base_100_noise_0.pt" \
     sample_load_bc_experiment
 ```
 
+**Notes:**
+
+- `--recovery_type`: Specifies the type of recovery policy to use.
+  Supported options:
+
+  - `"q"` (Success Q)
+  - `"five_q"` (Ensemble Success Q)
+  - `"expert"` (ThriftyDAgger baseline)
+
+- `--demonstration_set_file`: Path to the offline demonstration dataset.
+
+- `--skip_bc_pretrain`: Skip behavior cloning (BC) pretraining and start training directly from a pretrained BC model.
+
+- `--bc_checkpoint`: Path to the pretrained BC model checkpoint.
+  This flag is required when `--skip_bc_pretrain` is set.
+- After training, the trained model will located at `data/<exp_name>/best_model.pt`
+
 ### Evaluation
+
+To evaluate a trained model:
+
+```sh
+python scripts/eval.py data/sample/best_model.pt \
+    --environment "PointMaze_4rooms-v3" \
+    --iters 100
+```
+
+This script runs multiple evaluation episodes and reports performance metrics.
+Optional visualization flags (e.g., rendering or Q-value heatmaps) can be enabled if supported.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 <!-- CONTRIBUTING -->
@@ -153,15 +270,11 @@ Don't forget to give the project a star! Thanks again!
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
-<!-- LICENSE -->
-
 ## License
 
 Distributed under the MIT license. See `LICENSE.txt` for more information.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
-
-<!-- ACKNOWLEDGMENTS -->
 
 ## Acknowledgments
 
