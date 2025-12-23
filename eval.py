@@ -174,7 +174,7 @@ def draw_q_heatmap(ac, maze, obs0):
         vmax=0.6,
     )
     plt.colorbar(im, label="max Q-value")
-    plt.title("Max Q-value heatmap + best action arrows")
+    plt.title("Max Q-value heatmap")
     plt.xticks([])
     plt.yticks([])
 
@@ -213,7 +213,7 @@ def draw_q_heatmap(ac, maze, obs0):
 
 
 def plot_trajectories(
-    episodes_obs, 
+    episodes_obs,
     maze_layout,
 ) -> None:
 
@@ -227,7 +227,10 @@ def plot_trajectories(
     # 3. 畫迷宮牆
     if maze_layout == "PointMaze_4rooms-v3":
         maze = FOUR_ROOMS_21_21
-    elif maze_layout == "PointMaze_4rooms-v3-angle" or maze_layout == "PointMaze_4rooms-v3-angle-single-start":
+    elif (
+        maze_layout == "PointMaze_4rooms-v3-angle"
+        or maze_layout == "PointMaze_4rooms-v3-angle-single-start"
+    ):
         maze = FOUR_ROOMS_ANGLE
     elif maze_layout == "PointMaze_Complicated-v3":
         maze = COMPLICATED_MAZE
@@ -262,6 +265,7 @@ def plot_trajectories(
     plt.savefig("evaluation_trajectories", bbox_inches="tight")
     plt.show()
     print(f"Plot saved to evaluation_trajectories.png")
+
 
 def make_env(args):
     gym.register_envs(gymnasium_robotics)
@@ -425,6 +429,6 @@ if __name__ == "__main__":
     print(f"Success rate over {args.iters} episodes: {success_rate}")
     if args.q_heatmap:
         draw_q_heatmap(ac, env.maze, env.reset()[0])
-    
+
     if args.trajectory:
         plot_trajectories(ball_traj, args.environment)
