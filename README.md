@@ -124,7 +124,7 @@ pip install torch torchvision
 From the repository root directory:
 
 ```sh
-pip install -e recoverydagger
+pip install -e .
 ```
 
 ---
@@ -226,6 +226,8 @@ python3 train.py \
     sample_experiment
 ```
 
+The final positional argument specifies the experiment name, which determines the output directory under `data/`.
+
 #### 2. Continue training from a pretrained BC model
 
 If you already have a pretrained behavior cloning model, you can skip BC pretraining and continue training directly:
@@ -273,7 +275,7 @@ python eval.py data/sample/best_model.pt \
     --iters 100
 ```
 
-This script runs multiple evaluation episodes and reports performance metrics.
+The evaluation script reports success rate over multiple runs.
 Optional visualization flags (e.g., rendering or Q-value heatmaps) can be enabled if supported.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
