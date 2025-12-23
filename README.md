@@ -115,8 +115,8 @@ pip install torch torchvision
 ```
 
 ```sh
-# CUDA 12.1
-# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+# CUDA 12.8
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
 ```
 
 ##### 4. Install project dependencies
