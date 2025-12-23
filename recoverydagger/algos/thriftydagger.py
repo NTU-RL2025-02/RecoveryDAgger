@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 import h5py
 import wandb
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -157,6 +158,11 @@ def test_agent(
         return
 
     obs_list, act_list, done_list, reward_list = [], [], [], []
+
+    path = Path(logger_kwargs["output_dir"]) / f"epoch{epoch}_trajectories.hdf5"
+
+    if path.exists():
+        path.unlink()
 
     for episode_idx in range(num_test_episodes):
         ball_traj = []  # 用於紀錄球的軌跡

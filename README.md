@@ -40,6 +40,23 @@
 
 ## About RecoveryDAgger
 
+Imitation learning enables agents to acquire complex behaviors from expert demonstrations, yet standard behavior cloning (BC) often suffers from covariate shift
+and compounding errors in sequential decision-making tasks. Interactive methods
+such as DAgger alleviate this issue by querying the expert on states visited by the
+learner, but they typically require frequent expert supervision, resulting in high
+annotation cost.
+
+In this work, we propose RecoveryDAgger, a query-efficient interactive imitation
+learning framework that augments DAgger-style training with a learned recovery
+mechanism. Instead of immediately querying the expert in risky states, RecoveryDAgger first invokes a recovery policy that locally corrects the agent’s behavior
+by ascending the gradient of a learned Success Q-function, which estimates the
+probability of task completion. Expert queries are reserved for truly novel states
+where recovery is unreliable, thereby reducing redundant supervision. Experiments
+on the PointMaze navigation task demonstrate that RecoveryDAgger significantly
+reduces the number of expert queries while achieving comparable success rates to
+strong query-efficient baselines. Our work establishes the effectiveness of integrating learned recovery policies into interactive imitation learning to enhance query
+efficiency.
+
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ## Getting Started
@@ -154,7 +171,7 @@ Install PyTorch according to your platform:
 ##### 5. Install project dependencies
 
 ```sh
-pip install -e recoverydagger
+pip install -e .
 ```
 
 </details>
@@ -188,7 +205,7 @@ python models/demonstrations/gen_offline_data_maze.py --rule-base-expert [--epis
 This command trains RecoveryDAgger starting from behavior cloning (BC) pretraining.
 
 ```sh
-python3 scripts/train.py \
+python3 train.py \
     --seed 48763 \
     --device 0 \
     --iters 100 \
@@ -207,7 +224,7 @@ python3 scripts/train.py \
 If you already have a pretrained behavior cloning model, you can skip BC pretraining and continue training directly:
 
 ```sh
-python3 scripts/train.py \
+python3 train.py \
     --seed 48763 \
     --device 0 \
     --iters 100 \
@@ -237,14 +254,14 @@ python3 scripts/train.py \
 
 - `--bc_checkpoint`: Path to the pretrained BC model checkpoint.
   This flag is required when `--skip_bc_pretrain` is set.
-- After training, the trained model will located at `data/<exp_name>/best_model.pt`
+- After training, the trained model will located at `data/[exp_name]/[exp_name]_s[seed]/best_model.pt`
 
 ### Evaluation
 
 To evaluate a trained model:
 
 ```sh
-python scripts/eval.py data/sample/best_model.pt \
+python eval.py data/sample/best_model.pt \
     --environment "PointMaze_4rooms-v3" \
     --iters 100
 ```

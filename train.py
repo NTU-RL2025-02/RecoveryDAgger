@@ -21,10 +21,6 @@ Usage:
 import numpy as np
 import torch
 import wandb
-import os
-
-os.environ["MUJOCO_GL"] = "egl"
-
 
 from recoverydagger.algos.thriftydagger import thrifty
 from recoverydagger.utils.run_utils import setup_logger_kwargs
@@ -91,7 +87,6 @@ def main(args):
     #         "target_rate": args.targetrate,
     #         "environment": args.environment,
     #         "max_expert_query": args.max_expert_query,
-    #         "expert_policy_file": args.expert_policy_file,
     #         "demonstration_set_file": args.demonstration_set_file,
     #         "recovery_type": args.recovery_type,
     #         "bc_checkpoint": args.bc_checkpoint,
@@ -102,39 +97,7 @@ def main(args):
 
     # ---- 建 env ----
     env = None
-    if args.environment == "LunarLander-v3":
-        env = gym.make(
-            "LunarLander-v3",
-            continuous=True,
-            gravity=-3.0,
-            enable_wind=True,
-            wind_power=18.0,
-            turbulence_power=1.5,
-            render_mode="human" if render else None,
-        )
-        env = LunarLanderSuccessWrapper(env)
-
-    elif args.environment == "PointMaze_UMazeDense-v3":
-        env = gym.make(
-            "PointMaze_UMazeDense-v3",
-            maze_map=U_MAZE,
-            continuing_task=False,
-            reset_target=False,
-            render_mode="human" if render else None,
-        )
-        env = MazeWrapper(env)
-    elif args.environment == "PointMaze_Medium-v3":
-        env = gym.make(
-            "PointMaze_Medium-v3",
-            continuing_task=False,
-            reset_target=False,
-            render_mode="human" if render else None,
-        )
-        env = FlattenObservation(env)
-        env = NoisyActionWrapper(env, noise_scale=args.noisy_scale)
-        env = MazeWrapper(env)
-
-    elif args.environment == "PointMaze_4rooms-v3":
+    if args.environment == "PointMaze_4rooms-v3":
         env = gym.make(
             "PointMaze_Medium-v3",
             continuing_task=False,
@@ -262,14 +225,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "--targetrate", type=float, default=0.01, help="target context switching rate"
     )
-
-    parser.add_argument(
-        "--expert_policy_file",
-        type=str,
-        default="models/best_model_mediumdense",
-        help="filepath to expert model zip file",
-    )
-
     parser.add_argument(
         "--demonstration_set_file",
         type=str,

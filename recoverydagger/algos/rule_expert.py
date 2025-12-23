@@ -4,7 +4,6 @@ A rule-based hard-coded expert for maze environments. Use pre-defined rules to n
 """
 
 import numpy as np
-from recoverydagger.utils.transform import xy_to_cell_rowcol
 
 
 class RuleBasedExpert:
@@ -16,6 +15,16 @@ class RuleBasedExpert:
 
     def start_episode(self):
         pass
+
+    def xy_to_cell_rowcol(self, x, y):
+
+        i = int(-y + self.maze_height / 2)
+        j = int(x + self.maze_width / 2)
+
+        i = np.clip(i, 0, self.maze_height - 1)
+        j = np.clip(j, 0, self.maze_width - 1)
+
+        return i, j
 
     def __call__(self, observation) -> np.ndarray:
         """
