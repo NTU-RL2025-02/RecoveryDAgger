@@ -272,7 +272,8 @@ To evaluate a trained model:
 ```sh
 python eval.py data/sample/best_model.pt \
     --environment "PointMaze_4rooms-v3" \
-    --iters 100
+    --iters 100 \
+    --noisy_scale 1.0
 ```
 
 The evaluation script reports success rate over multiple runs.

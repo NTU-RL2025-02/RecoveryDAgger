@@ -28,7 +28,6 @@ class Recovery:
         """
         Parameters:
         q_networks: list of callables, each taking (obs, act) and returning scalar Q(s,a)
-            這部分我還沒implement好
         q_risk: for accumuate_risk
         alpha: R_t = alpha * R_{t-1} + (1-alpha) * indicator(用到eta當threshold)
         variance_weight: lambda 參數，用來平衡 mean_Q 和 var_Q

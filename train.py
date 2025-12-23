@@ -1,16 +1,62 @@
 """
 train.py
-Main training script for RecoveryDagger in maze environment.
 
-Usage:
-    python train.py <exp_name> [--seed INT] [--device INT] [--iters N]
-                     [--targetrate FLOAT] [--expert_policy_file PATH]
-                     [--demonstration_set_file PATH] [--max_expert_query N]
-                     [--environment ENV] [--render] [--recovery_type TYPE]
-                     [--eval PATH] [--num_test_episodes N]
-                     [--fix_thresholds] [--noisy_scale FLOAT]
-                     [--bc_checkpoint PATH] [--save_bc_checkpoint PATH]
-                     [--skip_bc_pretrain] [--risk-probe]
+Main training script for RecoveryDAgger on Gymnasium-Robotics PointMaze tasks.
+
+This script runs a DAgger-style online imitation learning loop with:
+  - optional Behavior Cloning (BC) warm-start,
+  - query-efficient expert intervention (bounded by a target switching/query rate),
+  - and an optional recovery policy (e.g., Q-based recovery variants).
+
+Typical workflow:
+  1) (Optional) BC pretrain from an offline demonstration dataset.
+  2) Run iterative data collection + policy updates (DAgger-style).
+  3) Evaluate periodically and log results to the experiment directory.
+
+Examples:
+    # Train on default 4-rooms with 100 iterations
+    python train.py my_exp
+
+    # Specify environment, seed, and GPU index
+    python train.py my_exp --environment PointMaze_Complicated-v3 --seed 1 --device 0
+
+    # Limit expert queries and target a lower switching/query rate
+    python train.py my_exp --targetrate 0.005 --max_expert_query 20000
+
+    # Fix thresholds (disable online target-rate adaptation)
+    python train.py my_exp --fix_thresholds
+
+    # Behavior Cloning: first run trains BC and saves it
+    python train.py bc_run --save_bc_checkpoint models/bc_policy_medium.pt
+
+    # Behavior Cloning: later runs skip BC pretraining and load from checkpoint
+    python train.py main_run --skip_bc_pretrain --bc_checkpoint models/bc_policy_medium.pt
+
+Arguments:
+    exp_name (positional):
+        Experiment name used for logging directory / run identifier.
+
+Key options:
+    --environment:
+        Selects the maze preset used by this script (must be implemented in train.py).
+
+    --targetrate / --fix_thresholds:
+        Controls expert-query / switching behavior.
+        If --fix_thresholds is set, threshold adaptation is disabled and --targetrate is ignored.
+
+    --max_expert_query:
+        Upper bound on the total number of expert queries across the entire training run.
+
+    --demonstration_set_file:
+        Path to offline expert demonstrations used for BC pretraining and/or initialization.
+
+    --recovery_type:
+        Selects the recovery policy variant (e.g., Q-based recovery vs expert-as-recovery).
+
+Notes:
+    - --render enables human rendering and will significantly slow down training.
+    - If --skip_bc_pretrain is enabled, --bc_checkpoint must point to a valid checkpoint,
+      otherwise the underlying training loop may raise an error.
 """
 
 # --------------------------------------------------------------

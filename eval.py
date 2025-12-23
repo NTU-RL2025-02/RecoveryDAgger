@@ -1,14 +1,32 @@
 """
 scripts/eval.py
-Evaluation script for RecoveryDagger in maze environments.
-Used to evaluate trained policies and visualize Q-value heatmaps.
-Usage:
-    python eval.py <path_to_trained_model.pt> [--environment MAZE_NAME] [--iters N] [--render] [--q_heatmap]
-Options:
-    --environment MAZE_NAME : Name of the maze environment to evaluate on. Choices: PointMaze_4rooms-v3, PointMaze_Complicated-v3, PointMaze_4rooms-v3-angle, PointMaze_4rooms-v3-angle-single-start
-    --iters N               : Number of evaluation iterations (default: 100)
-    --render                : Whether to render the environment during evaluation
-    --q_heatmap             : Whether to draw Q-value heatmap
+
+Evaluation script for RecoveryDAgger policies on Gymnasium-Robotics PointMaze tasks.
+
+This script loads a trained policy checkpoint (.pt), runs evaluation episodes, and
+optionally visualizes a Q-value heatmap (max Q + best-action field) over the maze.
+
+Examples:
+    # Evaluate a checkpoint for 100 episodes on 4-rooms
+    python eval.py checkpoints/final_model.pt --environment PointMaze_4rooms-v3 --iters 100
+
+    # Evaluate with rendering (slower)
+    python eval.py checkpoints/final_model.pt --render
+
+    # Draw Q-value heatmap (writes q_heatmap.png)
+    python eval.py checkpoints/final_model.pt --q_heatmap
+
+Arguments:
+    pt_path (positional):
+        Path to the saved PyTorch checkpoint (.pt). The loaded object is expected to
+        implement:
+            - act(obs) -> action
+            - safety(obs, action) -> scalar Q / safety score   (only needed for --q_heatmap)
+
+Notes:
+    - --render enables human rendering and will slow down evaluation.
+    - --q_heatmap is computationally expensive (iterates over the maze grid).
+    - This script registers Gymnasium-Robotics environments via gym.register_envs().
 """
 
 # --- stdlib ---
@@ -255,32 +273,77 @@ def make_env(args):
 
 
 if __name__ == "__main__":
-    # Argument parser
-    parser = argparse.ArgumentParser()
-    parser.add_argument("pt_path", type=str, help="Path to the .pt file.")
-    parser.add_argument(
-        "--iters", type=int, default=100, help="Number of evaluation iterations."
+    parser = argparse.ArgumentParser(
+        description=(
+            "Evaluate a trained RecoveryDAgger policy on maze environments and optionally "
+            "visualize a Q-value heatmap."
+        )
     )
+
+    # ------------------------
+    # Positional arguments
+    # ------------------------
+    parser.add_argument(
+        "pt_path",
+        type=str,
+        help=(
+            "Path to a PyTorch checkpoint (.pt) to evaluate. "
+            "The loaded policy is expected to provide ac.act(obs). "
+            "If --q_heatmap is enabled, it must also provide ac.safety(obs, action)."
+        ),
+    )
+
+    # ------------------------
+    # Evaluation configuration
+    # ------------------------
+    parser.add_argument(
+        "--iters",
+        type=int,
+        default=100,
+        help="Number of evaluation episodes to run (default: 100).",
+    )
+
     parser.add_argument(
         "--environment",
         type=str,
         default="PointMaze_4rooms-v3",
-        help="Environment name. Choices: PointMaze_4rooms-v3, PointMaze_Complicated-v3, PointMaze_4rooms-v3-angle, PointMaze_4rooms-v3-angle-single-start",
+        help=(
+            "Maze environment preset to evaluate on. Supported choices:\n"
+            "  - PointMaze_4rooms-v3\n"
+            "  - PointMaze_Complicated-v3\n"
+            "  - PointMaze_4rooms-v3-angle\n"
+            "  - PointMaze_4rooms-v3-angle-single-start"
+        ),
     )
-    parser.add_argument(
-        "--noisy_scale",
-        type=float,
-        default=0,
-        help="Scale of noise to add to actions when training the recovery policy. 0 means no noise.",
-    )
+
     parser.add_argument(
         "--render",
         action="store_true",
-        help="Whether to render the environment during evaluation.",
+        help="Enable human rendering during evaluation (slower).",
     )
+
+    # ------------------------
+    # Environment / noise settings
+    # ------------------------
     parser.add_argument(
-        "--q_heatmap", action="store_true", help="Whether to draw Q-value heatmap."
+        "--noisy_scale",
+        type=float,
+        default=0.0,
+        help=(
+            "Standard deviation scale for action noise injected by NoisyActionWrapper. "
+            "Set to 0 to disable (default: 0)."
+        ),
     )
+
+    # ------------------------
+    # Visualization
+    # ------------------------
+    parser.add_argument(
+        "--q_heatmap",
+        action="store_true",
+        help=("Compute and save a Q-value heatmap (q_heatmap.png). "),
+    )
+
     parser.set_defaults(render=False, q_heatmap=False)
     args = parser.parse_args()
 
