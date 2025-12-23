@@ -210,100 +210,186 @@ def main(args):
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument("exp_name", type=str)
-    parser.add_argument("--seed", "-s", type=int, default=0)
+    parser = argparse.ArgumentParser(
+        description=(
+            "Main training script for RecoveryDAgger in maze environments.\n\n"
+            "This script runs a DAgger-style imitation learning loop with optional "
+            "query-efficient expert intervention and a recovery policy."
+        )
+    )
+
+    # ------------------------
+    # Positional arguments
+    # ------------------------
+    parser.add_argument(
+        "exp_name",
+        type=str,
+        help=(
+            "Experiment name. Used as the logging directory name "
+            "and as the run identifier."
+        ),
+    )
+
+    # ------------------------
+    # General training setup
+    # ------------------------
+    parser.add_argument(
+        "--seed",
+        "-s",
+        type=int,
+        default=0,
+        help="Random seed for environment, policy initialization, and data sampling.",
+    )
+
     parser.add_argument(
         "--device",
         type=int,
         default=0,
-        help="Which GPU to use. If CPU, use any number.",
+        help=(
+            "GPU device index to use. "
+            "If CUDA is unavailable, this value is ignored and CPU is used."
+        ),
     )
+
     parser.add_argument(
-        "--iters", type=int, default=100, help="number of DAgger-style iterations"
+        "--iters",
+        type=int,
+        default=100,
+        help="Number of DAgger-style training iterations.",
     )
+
     parser.add_argument(
-        "--targetrate", type=float, default=0.01, help="target context switching rate"
-    )
-    parser.add_argument(
-        "--demonstration_set_file",
+        "--environment",
         type=str,
-        default="models/offline_dataset_mazeMedium_1000.pkl",
-        help="filepath to expert data pkl file",
+        default="PointMaze_4rooms-v3",
+        help="Maze environment name. Must be supported by this training script.",
+    )
+
+    parser.add_argument(
+        "--render",
+        action="store_true",
+        dest="render",
+        help="Enable environment rendering during training (slows down training).",
+    )
+    parser.set_defaults(render=False)
+
+    # ------------------------
+    # Expert querying / switching
+    # ------------------------
+    parser.add_argument(
+        "--targetrate",
+        type=float,
+        default=0.01,
+        help=(
+            "Target expert query (or policy switching) rate. "
+            "Used to adapt switching thresholds online unless --fix_thresholds is set."
+        ),
     )
 
     parser.add_argument(
         "--max_expert_query",
         type=int,
         default=50000,
-        help="maximum number of expert queries allowed",
+        help="Maximum total number of expert queries allowed during training.",
     )
-    parser.add_argument("--environment", type=str, default="PointMaze_4rooms-v3")
+
     parser.add_argument(
-        "--render",
+        "--fix_thresholds",
         action="store_true",
-        dest="render",
-        help="Enable env rendering (default: disabled).",
+        dest="fix_thresholds",
+        help=(
+            "Fix switching thresholds and disable online adaptation. "
+            "When enabled, --targetrate is ignored."
+        ),
     )
-    parser.set_defaults(render=False)
+    parser.set_defaults(fix_thresholds=False)
+
+    # ------------------------
+    # Demonstration data
+    # ------------------------
+    parser.add_argument(
+        "--demonstration_set_file",
+        type=str,
+        default="models/offline_dataset_mazeMedium_1000.pkl",
+        help="Path to offline expert demonstration dataset (.pkl).",
+    )
+
+    # ------------------------
+    # Recovery policy
+    # ------------------------
     parser.add_argument(
         "--recovery_type",
         type=str,
         default="five_q",
         choices=["five_q", "q", "expert"],
-        help="choose recovery policy variant",
+        help=(
+            "Type of recovery policy to use:\n"
+            "  - five_q : Ensemble-based Q recovery policy (default)\n"
+            "  - q      : Single Q-function recovery policy\n"
+            "  - expert : Always use expert as recovery policy"
+        ),
     )
+
+    parser.add_argument(
+        "--noisy_scale",
+        type=float,
+        default=0.0,
+        help=(
+            "Scale of Gaussian noise added to actions during recovery policy training. "
+            "Set to 0 to disable action noise."
+        ),
+    )
+
+    # ------------------------
+    # Evaluation
+    # ------------------------
     parser.add_argument(
         "--eval",
         type=str,
         default=None,
-        help="filepath to saved pytorch model to initialize weights",
+        help=(
+            "Path to a saved PyTorch policy checkpoint used to initialize the policy "
+            "before training."
+        ),
     )
+
     parser.add_argument(
         "--num_test_episodes",
         type=int,
         default=100,
-        help="number of test episodes to run after each iteration",
+        help="Number of evaluation episodes run after each training iteration.",
     )
-    parser.add_argument(
-        "--fix_thresholds",
-        action="store_true",
-        dest="fix_thresholds",
-        help="Fix switching thresholds and do not update online. Will disable target rate adaptation.",
-    )
-    parser.set_defaults(fix_thresholds=False)
-    parser.add_argument(
-        "--noisy_scale",
-        type=float,
-        default=0,
-        help="Scale of noise to add to actions when training the recovery policy. 0 means no noise.",
-    )
-    # -------- BC 相關 CLI 參數 --------
+
+    # ------------------------
+    # Behavior Cloning (BC)
+    # ------------------------
     parser.add_argument(
         "--bc_checkpoint",
         type=str,
         default=None,
         help=(
-            "Path to pretrained BC policy checkpoint. "
-            "Typical use: --bc_checkpoint models/bc_policy_medium.pt --skip_bc_pretrain"
+            "Path to a pretrained behavior cloning (BC) policy checkpoint. "
+            "Typically used together with --skip_bc_pretrain."
         ),
     )
+
     parser.add_argument(
         "--save_bc_checkpoint",
         type=str,
         default=None,
         help=(
-            "If set, save BC policy after the initial pretraining to this path. "
-            "Typical use (first run): --save_bc_checkpoint models/bc_policy_medium.pt"
+            "If set, save the BC policy after the initial BC pretraining step "
+            "to this path."
         ),
     )
+
     parser.add_argument(
         "--skip_bc_pretrain",
         action="store_true",
         dest="skip_bc_pretrain",
         help=(
-            "Skip BC pretraining step and rely on --bc_checkpoint. "
-            "Will raise an error inside thrifty() if the checkpoint is missing."
+            "Skip the BC pretraining phase and directly load the policy from "
+            "--bc_checkpoint. An error will be raised if the checkpoint is missing."
         ),
     )
     parser.set_defaults(skip_bc_pretrain=False)
