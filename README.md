@@ -276,6 +276,18 @@ python eval.py data/sample/best_model_five_q.pt \
     --noisy_scale 1.0
 ```
 
+To plot Success Q heatmap and evaluation trajectories
+
+```sh
+python eval.py data/sample/best_model_five_q.pt \
+    --environment "PointMaze_4rooms-v3" \
+    --iters 100 \
+    --noisy_scale 1.0 \
+    --q_heatmap \
+    --trajectory
+```
+
+
 The evaluation script reports success rate over multiple runs.
 Optional visualization flags (e.g., rendering or Q-value heatmaps) can be enabled if supported.
 
